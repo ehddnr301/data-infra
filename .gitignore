@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+.turbo/
+.wrangler/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.ruff_cache/
+
+# Environment
+.env
+.dev.vars
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+.omc
+ticket-system

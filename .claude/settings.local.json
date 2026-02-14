@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:lvup.pseudo-lab.com)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "mcp__plugin_oh-my-claudecode_t__state_read",
+      "Bash(pnpm --version:*)",
+      "Bash(uv:*)",
+      "Bash(node --version:*)",
+      "Bash(command -v:*)",
+      "Bash(command -v uv:*)",
+      "Bash(command -v git:*)",
+      "mcp__plugin_oh-my-claudecode_t__state_write",
+      "Bash(git init:*)"
+    ]
+  }
+}

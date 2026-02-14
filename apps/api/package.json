@@ -1,0 +1,21 @@
+{
+  "name": "@pseudolab/api",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
+    "lint": "biome check src/",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pseudolab/shared-types": "workspace:*",
+    "hono": "^4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4",
+    "vitest": "^2",
+    "wrangler": "^4"
+  }
+}
