@@ -9,7 +9,10 @@ gharchive:
 # 수집 대상 org 목록
 # gharchive.org 이벤트 중 org.login이 이 목록에 포함된 것만 필터링
 target_orgs:
-  - pseudolab
+  - FinAgent-Lab
+  - CausalInferenceLab
+  - Pseudo-Lab
+  - Hugging-Face-KREW
 
 # 수집 대상 이벤트 타입 (빈 리스트 = 전체)
 event_types: []

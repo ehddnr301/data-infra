@@ -3,18 +3,20 @@
 ## Summary
 
 - 기준일: `2026-02-16`
-- 현재 상태: 인프라(Terraform) + D1 스키마 + 공용 타입 + API/Hono 골격 + Web/React 골격까지 완료
+- 현재 상태: 인프라(Terraform) + D1 스키마 + 공용 타입 + API/Hono 골격 + Web/React 골격 + GitHub ETL `fetch` 구현 완료
 - 운영 가능 범위:
   - API 기본 헬스체크/라우팅(`/api/health`, `/api/github/*`, `/api/catalog/*`)
   - Web 기본 라우팅/빌드/테스트(`apps/web`)
+  - GitHub ETL 시간별 스트리밍 수집(`gharchive-etl fetch`)
 - 미구현 핵심:
-  - GitHub ETL `fetch` 실동작
+  - GitHub ETL의 R2 업로드(`r2.py`) / D1 적재(`d1.py`) 실구현
   - Catalog API의 실제 DB 조회/상세/컬럼 반환 로직
 - 운영자가 먼저 할 일:
   1. `pnpm install && pnpm build && pnpm check`
   2. `pnpm --filter @pseudolab/api dev` 후 `/api/health` 확인
   3. `pnpm --filter @pseudolab/web dev` 후 `/`, `/datasets` 동작 확인
-  4. 인프라 변경 시 `infra/`에서 `terraform plan/apply/output` 재검증
+  4. `uv run gharchive-etl fetch --date 2024-01-15 --start-hour 0 --end-hour 0 --no-json-log` 스모크 실행
+  5. 인프라 변경 시 `infra/`에서 `terraform plan/apply/output` 재검증
 
 아래부터는 영역별 상세 운영 절차입니다.
 
@@ -29,17 +31,17 @@
   - D1 카탈로그 스키마/인덱스/시드 및 마이그레이션 체계
   - 공유 TypeScript 타입 패키지 (`@pseudolab/shared-types`) 확장
   - GitHub ingestion Python 프로젝트 골격 + 테스트
+  - GitHub ETL `fetch` 구현 (시간별 스트리밍 다운로드/필터링/JSONL 출력/재시도/요약 로그)
   - Hono API 보일러플레이트 (`/api/health`, `/api/github/*`, `/api/catalog/*`)
   - RFC 7807 에러 응답 규격 적용 (`ProblemDetail`)
   - React + Vite 웹앱 부트스트랩 (`apps/web`) + 기본 라우팅/레이아웃/테스트
 
 - 아직 미구현(운영 주의)
-  - `gharchive-etl fetch` 실동작 미구현 (`NotImplementedError`)
-  - `downloader.py`, `r2.py`, `d1.py`는 인터페이스 골격만 존재
+  - `r2.py`, `d1.py`는 인터페이스 골격만 존재 (실제 업로드/적재 미구현)
   - 카탈로그 API의 실제 DB 조회/상세/컬럼 반환 로직은 스텁 상태
 
-즉, **인프라 + DB 스키마 + 타입 + ETL 골격까지 준비된 상태**이며,
-**API/Web는 골격과 계약이 준비되었고, 실제 데이터 처리 로직은 후속 티켓에서 구현 필요**합니다.
+즉, **인프라 + DB 스키마 + 타입 + GitHub ETL fetch까지 동작 가능한 상태**이며,
+**API/Web는 골격과 계약이 준비되었고, 카탈로그 조회/적재 계층은 후속 티켓에서 구현 필요**합니다.
 
 ---
 
@@ -313,18 +315,22 @@ uv run ruff check domains/github/ingestion/
 uv run ruff format --check domains/github/ingestion/
 uv run gharchive-etl --help
 uv run gharchive-etl --version
+uv run gharchive-etl fetch --date 2024-01-15 --start-hour 0 --end-hour 0 --no-json-log
+uv run gharchive-etl fetch --date 2024-01-15 --start-hour 0 --end-hour 1 \
+  --output-jsonl /tmp/gharchive-2024-01-15.jsonl --no-json-log
 ```
 
-### 8-2. 현재 불가한 실행
+확인 포인트:
+- `fetch` 성공 시 요약 로그(`FETCH_SUMMARY`)가 출력되고 exit code `0`
+- 일부 시간대 실패 시 실패 시간 목록 출력 후 exit code `1`
+- `--output-jsonl`에는 필터 통과 이벤트만 기록됨
+- `404` 시간대는 경고만 남기고 다음 시간대로 진행
 
-아래 명령은 아직 구현되지 않아 실패가 정상입니다.
+### 8-2. 현재 미구현 범위(후속 티켓)
 
-```bash
-uv run gharchive-etl fetch --date 2024-01-15
-```
-
-실패 형태:
-- `NotImplementedError` (후속 티켓에서 구현 예정)
+- R2 실제 업로드 (`r2.py`)
+- D1 실제 적재 (`d1.py`)
+- 병렬 다운로드/스케줄러 연동
 
 ---
 
@@ -339,8 +345,10 @@ uv run gharchive-etl fetch --date 2024-01-15
 - 시드 재적용 시 `INSERT OR IGNORE`로 중복 안전한지 확인
 
 3. ETL 실행 요청이 들어왔을 때
-- 현재 `fetch` 미구현 상태임을 먼저 공유
-- 후속 티켓 범위(다운로드/R2 업로드/D1 insert 구현)로 전환
+- `uv run gharchive-etl fetch ... --no-json-log`로 재현 후 실패 시간대/이벤트 코드 확인
+- `NETWORK_ERROR`가 반복되면 네트워크/gharchive 상태를 점검하고 시간대 단위로 재실행
+- `PARSE_ERROR` 비율이 높으면 원본 시간대 gzip 손상 여부와 파서 로그를 우선 확인
+- 적재 이슈는 ETL fetch 범위가 아니라 후속 `r2.py`/`d1.py` 구현 범위인지 분리 확인
 
 ---
 
@@ -351,6 +359,7 @@ uv run gharchive-etl fetch --date 2024-01-15
   - `ticket-system/ticket-done/[shared]002-cloudflare-리소스-프로비저닝.md`
   - `ticket-system/ticket-done/[shared]003-공유-타입스크립트-타입-정의.md`
   - `ticket-system/ticket-done/[github-archive]004-python-etl-프로젝트-셋업.md`
+  - `ticket-system/ticket-done/[github-archive]008-github-archive-데이터-수집.md`
   - `ticket-system/ticket-done/[catalog]005-D1-카탈로그-스키마-설계.md`
   - `ticket-system/ticket-done/[catalog]006-hono-api-보일러플레이트.md`
   - `ticket-system/ticket-done/[catalog]007-react-vite-프로젝트-셋업.md`
