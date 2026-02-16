@@ -1,0 +1,35 @@
+# GitHub Archive ETL 설정
+# - 전체 데이터가 아닌, 아래 orgs에 해당하는 이벤트만 수집합니다.
+# - gharchive.org는 시간별(hourly) ndjson.gz 파일을 제공합니다.
+#   일자 지정 시 해당일의 0~23시 파일을 순회하여 처리합니다.
+
+gharchive:
+  base_url: "https://data.gharchive.org"
+
+# 수집 대상 org 목록
+# gharchive.org 이벤트 중 org.login이 이 목록에 포함된 것만 필터링
+target_orgs:
+  - pseudolab
+
+# 수집 대상 이벤트 타입 (빈 리스트 = 전체)
+event_types: []
+
+# repo 단위 제외 필터 (선택)
+exclude_repos: []
+
+# 네트워크/운영 설정
+http:
+  download_timeout_sec: 120
+  max_retries: 3
+  backoff_factor: 2.0
+  max_concurrency: 4
+  user_agent: "gharchive-etl/0.1.0 (pseudolab)"
+
+# R2 설정
+r2:
+  bucket_name: "gharchive-raw"
+  prefix: "raw/github-archive"
+
+# D1 설정 (HTTP API)
+d1:
+  database_id: ""
