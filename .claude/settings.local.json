@@ -12,7 +12,13 @@
       "Bash(command -v uv:*)",
       "Bash(command -v git:*)",
       "mcp__plugin_oh-my-claudecode_t__state_write",
-      "Bash(git init:*)"
+      "Bash(git init:*)",
+      "Bash(git -C /home/dwlee/pseudolab-cloudflare log --oneline -20)",
+      "Bash(git -C /home/dwlee/pseudolab-cloudflare status --short)",
+      "Bash(wc:*)",
+      "Bash(terraform state list:*)",
+      "Bash(cd /home/dwlee/pseudolab-cloudflare/infra && terraform output:*)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

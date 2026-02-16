@@ -1,3 +1,30 @@
 name = "pseudolab-api"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# =============================================================================
+# R2 Bucket 바인딩
+# terraform apply 후 출력된 값으로 <PLACEHOLDER>를 교체하세요.
+# =============================================================================
+[[r2_buckets]]
+binding = "ARCHIVE_BUCKET"
+bucket_name = "github-archive-raw"
+
+# =============================================================================
+# D1 Database 바인딩
+# terraform output d1_database_id 값으로 <PLACEHOLDER>를 교체하세요.
+# =============================================================================
+[[d1_databases]]
+binding = "DB"
+database_name = "pseudolab-main"
+database_id = "e7f4cab0-3293-4942-988f-38d9e97e14b2"
+
+# =============================================================================
+# KV Namespace 바인딩
+# terraform output kv_namespace_id / kv_namespace_preview_id 값으로 교체하세요.
+# =============================================================================
+[[kv_namespaces]]
+binding = "CACHE"
+id = "9b50454f6eb6483cba84a41fbec19ce9"
+preview_id = "397782aa9e304aa3bf3a741fbc55fd87"

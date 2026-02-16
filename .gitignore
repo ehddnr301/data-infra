@@ -15,7 +15,19 @@ __pycache__/
 
 # Environment
 .env
+.env.*
+!.env.example
+.env.local
 .dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Terraform
+infra/.terraform/
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/terraform.tfvars
+infra/.terraform.tfstate.lock.info
 
 # IDE
 .vscode/
@@ -24,4 +36,4 @@ __pycache__/
 # OS
 .DS_Store
 .omc
-ticket-system
+ticket-system/

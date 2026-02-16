@@ -1,0 +1,7 @@
+# Cloudflare 자격증명
+# 이 파일을 terraform.tfvars로 복사한 후 실제 값을 입력하세요.
+# terraform.tfvars는 .gitignore에 의해 Git에서 제외됩니다.
+
+cloudflare_api_token  = "your-api-token-here"
+cloudflare_account_id = "your-account-id-here"
+environment           = "dev"
