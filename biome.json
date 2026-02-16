@@ -31,6 +31,6 @@
     }
   },
   "files": {
-    "ignore": ["node_modules", "dist", ".turbo", ".wrangler", "domains", ".omc"]
+    "ignore": ["node_modules", "dist", ".turbo", ".wrangler", "domains", ".omc", ".venv"]
   }
 }
