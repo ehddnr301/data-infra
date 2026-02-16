@@ -48,6 +48,41 @@ class TestLoadConfig:
         config = load_config(tmp_config_file)
         assert config.d1.database_id == "env-db-id"
 
+    def test_env_override_cloudflare_account_id(
+        self, tmp_config_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CLOUDFLARE_ACCOUNT_ID → r2.endpoint 주입 검증."""
+        monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "abc123")
+        config = load_config(tmp_config_file)
+        assert config.r2.endpoint == "https://abc123.r2.cloudflarestorage.com"
+
+    def test_env_override_cloudflare_account_id_overwrites_yaml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """환경변수가 config.yaml의 endpoint보다 우선한다."""
+        data = {
+            "target_orgs": ["pseudolab"],
+            "r2": {
+                "bucket_name": "gharchive-raw",
+                "prefix": "raw/github-archive",
+                "endpoint": "https://custom.endpoint.com",
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(data), encoding="utf-8")
+        monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "abc123")
+
+        config = load_config(config_path)
+        assert config.r2.endpoint == "https://abc123.r2.cloudflarestorage.com"
+
+    def test_env_override_without_cloudflare_account_id(
+        self, tmp_config_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CLOUDFLARE_ACCOUNT_ID 미설정 시 endpoint는 기본값 None."""
+        monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+        config = load_config(tmp_config_file)
+        assert config.r2.endpoint is None
+
 
 class TestAppConfigValidation:
     """Pydantic 모델 검증 테스트."""

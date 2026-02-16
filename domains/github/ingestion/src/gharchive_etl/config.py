@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
@@ -29,6 +30,7 @@ class HttpConfig(BaseModel):
 class R2Config(BaseModel):
     bucket_name: str = "gharchive-raw"
     prefix: str = "raw/github-archive"
+    endpoint: str | None = None
 
 
 class D1Config(BaseModel):
@@ -63,6 +65,11 @@ def load_config(path: Path | None = None) -> AppConfig:
     환경변수 우선순위: 시스템 환경변수 > .env 파일 > config.yaml 기본값
     """
     config_path = path or _DEFAULT_CONFIG_PATH
+
+    # .env 파일 로딩: config.yaml과 같은 디렉터리의 .env를 탐색
+    dotenv_path = config_path.parent / ".env"
+    load_dotenv(dotenv_path=dotenv_path, override=False)
+
     with open(config_path) as f:
         raw = yaml.safe_load(f)
 
@@ -72,7 +79,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     # 환경변수 오버라이드
     if account_id := os.environ.get("CLOUDFLARE_ACCOUNT_ID"):
         raw.setdefault("r2", {})
-        raw["r2"].setdefault("endpoint", f"https://{account_id}.r2.cloudflarestorage.com")
+        raw["r2"]["endpoint"] = f"https://{account_id}.r2.cloudflarestorage.com"
 
     if d1_id := os.environ.get("D1_DATABASE_ID"):
         raw.setdefault("d1", {})
