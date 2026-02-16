@@ -18,7 +18,14 @@
       "Bash(wc:*)",
       "Bash(terraform state list:*)",
       "Bash(cd /home/dwlee/pseudolab-cloudflare/infra && terraform output:*)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(pnpm install:*)",
+      "Bash(pnpm add:*)",
+      "Bash(npx tsc:*)",
+      "mcp__plugin_oh-my-claudecode_x__ask_codex",
+      "WebFetch(domain:data.gharchive.org)",
+      "Bash(curl:*)",
+      "Bash(gunzip:*)"
     ]
   }
 }

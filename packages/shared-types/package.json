@@ -8,10 +8,26 @@
     ".": {
       "import": "./src/index.ts",
       "types": "./src/index.ts"
+    },
+    "./github": {
+      "import": "./src/github/index.ts",
+      "types": "./src/github/index.ts"
+    },
+    "./discord": {
+      "import": "./src/discord/index.ts",
+      "types": "./src/discord/index.ts"
+    },
+    "./common": {
+      "import": "./src/common/index.ts",
+      "types": "./src/common/index.ts"
     }
   },
   "scripts": {
     "lint": "biome check src/",
+    "typecheck": "tsc --noEmit",
     "test": "echo 'no tests yet'"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260214.0"
   }
 }
