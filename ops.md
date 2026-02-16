@@ -3,20 +3,23 @@
 ## Summary
 
 - 기준일: `2026-02-16`
-- 현재 상태: 인프라(Terraform) + D1 스키마 + 공용 타입 + API/Hono 골격 + Web/React 골격 + GitHub ETL `fetch` 구현 완료
+- 현재 상태: 인프라(Terraform) + D1 스키마 + 공용 타입 + API/Hono 골격 + Web/React 골격 + GitHub ETL `fetch` + `filter` + `transformer` + `upload`(R2/D1) 구현 완료
 - 운영 가능 범위:
   - API 기본 헬스체크/라우팅(`/api/health`, `/api/github/*`, `/api/catalog/*`)
   - Web 기본 라우팅/빌드/테스트(`apps/web`)
   - GitHub ETL 시간별 스트리밍 수집(`gharchive-etl fetch`)
+  - GitHub ETL 이벤트 필터링(`filter_events`) + 가공/변환(`transformer`)
+  - GitHub ETL R2 업로드(`upload --target r2`) + D1 적재(`upload --target d1`)
 - 미구현 핵심:
-  - GitHub ETL의 R2 업로드(`r2.py`) / D1 적재(`d1.py`) 실구현
+  - `fetch → upload` 자동 연결 파이프라인 (현재 수동 `--input-dir` 지정)
   - Catalog API의 실제 DB 조회/상세/컬럼 반환 로직
 - 운영자가 먼저 할 일:
   1. `pnpm install && pnpm build && pnpm check`
   2. `pnpm --filter @pseudolab/api dev` 후 `/api/health` 확인
   3. `pnpm --filter @pseudolab/web dev` 후 `/`, `/datasets` 동작 확인
   4. `uv run gharchive-etl fetch --date 2024-01-15 --start-hour 0 --end-hour 0 --no-json-log` 스모크 실행
-  5. 인프라 변경 시 `infra/`에서 `terraform plan/apply/output` 재검증
+  5. `uv run gharchive-etl upload --date 2024-01-15 --input-dir /tmp/data --target all --dry-run --no-json-log` 업로드 dry-run 확인
+  6. 인프라 변경 시 `infra/`에서 `terraform plan/apply/output` 재검증
 
 아래부터는 영역별 상세 운영 절차입니다.
 
@@ -32,16 +35,18 @@
   - 공유 TypeScript 타입 패키지 (`@pseudolab/shared-types`) 확장
   - GitHub ingestion Python 프로젝트 골격 + 테스트
   - GitHub ETL `fetch` 구현 (시간별 스트리밍 다운로드/필터링/JSONL 출력/재시도/요약 로그)
+  - GitHub ETL `filter` + `transformer` 구현 (이벤트 필터링 + 14종 페이로드 정규화/변환/검증/중복제거)
+  - GitHub ETL `upload` 구현 (R2 Wrangler CLI 업로드 + D1 HTTP API 적재 + daily_stats UPSERT)
   - Hono API 보일러플레이트 (`/api/health`, `/api/github/*`, `/api/catalog/*`)
   - RFC 7807 에러 응답 규격 적용 (`ProblemDetail`)
   - React + Vite 웹앱 부트스트랩 (`apps/web`) + 기본 라우팅/레이아웃/테스트
 
 - 아직 미구현(운영 주의)
-  - `r2.py`, `d1.py`는 인터페이스 골격만 존재 (실제 업로드/적재 미구현)
+  - `fetch → upload` 자동 연결 파이프라인 (현재 수동 `--input-dir` 지정)
   - 카탈로그 API의 실제 DB 조회/상세/컬럼 반환 로직은 스텁 상태
 
-즉, **인프라 + DB 스키마 + 타입 + GitHub ETL fetch까지 동작 가능한 상태**이며,
-**API/Web는 골격과 계약이 준비되었고, 카탈로그 조회/적재 계층은 후속 티켓에서 구현 필요**합니다.
+즉, **인프라 + DB 스키마 + 타입 + GitHub ETL fetch/filter/transformer/upload까지 동작 가능한 상태**이며,
+**API/Web는 골격과 계약이 준비되었고, fetch→upload 자동 연결/카탈로그 조회 계층은 후속 티켓에서 구현 필요**합니다.
 
 ---
 
@@ -306,11 +311,47 @@ pnpm --filter @pseudolab/web test
 
 작업 디렉터리: `domains/github/ingestion/`
 
-### 8-1. 가능한 점검
+### 8-1. 구현 모듈 현황
+
+| 모듈 | 파일 | 설명 |
+|------|------|------|
+| CLI/fetch | `cli.py`, `downloader.py` | 시간별 스트리밍 수집, 재시도, JSONL 출력 |
+| CLI/upload | `cli.py` | R2/D1 업로드 명령 (--target r2/d1/all, --dry-run) |
+| filter | `filter.py` | org/repo/event_type 기반 이벤트 필터링 |
+| transformer | `transformer.py` | 14종 이벤트 페이로드 정규화, EventRow 변환, 검증, 중복제거, DailyStats 집계 |
+| d1 | `d1.py` | D1 HTTP API 클라이언트 (parameterized query, 바이트 기반 배치 분할) |
+| r2 | `r2.py` | R2 Wrangler CLI 업로드 (org/repo 그룹핑, gzip 압축) |
+| models | `models.py` | GitHubEvent, Actor, Repo, Org Pydantic 모델 |
+| config | `config.py` | YAML 기반 설정 로딩 (D1 account_id/api_token 포함) |
+
+`transformer.py` 주요 구성:
+- `EventRow` (TypedDict): D1 events 테이블 행 타입 (id, type, actor_login, repo_name, org_name, payload, created_at, batch_date)
+- `DailyStatsRow` (TypedDict): D1 daily_stats 테이블 행 타입 (date, org_name, repo_name, event_type, count)
+- `TransformStats` (dataclass): 입출력 통계 (total_input/output, duplicates_removed, validation_errors, type별 카운트)
+- `normalize_payload()`: 14종 이벤트 타입별 페이로드 추출 + fallback
+- `to_event_row()`: GitHubEvent → EventRow 변환
+- `deduplicate()`: 이벤트 ID 기반 중복 제거
+- `validate_row()`: 필수 필드/JSON/날짜 형식 검증
+- `transform_events()`: 전체 파이프라인 (변환 → 검증 → 중복제거 → 통계)
+- `compute_daily_stats()`: EventRow → DailyStatsRow 집계
+
+`d1.py` 주요 구성:
+- `D1InsertResult` (dataclass): 적재 결과 (total_rows, rows_inserted, rows_skipped, batches_executed, errors, dry_run)
+- `insert_events()`: INSERT OR IGNORE 배치 적재 (바이트 기반 동적 분할, 700KB + 500행 이중 상한)
+- `insert_daily_stats()`: ON CONFLICT DO UPDATE SET count=excluded.count UPSERT
+- `_d1_query()`: D1 HTTP API 호출 (지수 백오프 재시도, 5xx/429만 재시도)
+
+`r2.py` 주요 구성:
+- `R2UploadResult` (dataclass): 업로드 결과 (files_uploaded, files_skipped, bytes_total, errors, dry_run)
+- `upload_events_to_r2()`: org/repo별 그룹핑 → gzip 압축 → Wrangler CLI 업로드
+- `_wrangler_r2_put()`: subprocess 호출 + 지수 백오프 재시도
+- R2 키 형식: `{prefix}/{org}/{repo}/{date}.jsonl.gz`
+
+### 8-2. 가능한 점검
 
 ```bash
 uv sync
-uv run pytest domains/github/ingestion/tests/
+uv run pytest domains/github/ingestion/tests/          # 165 tests
 uv run ruff check domains/github/ingestion/
 uv run ruff format --check domains/github/ingestion/
 uv run gharchive-etl --help
@@ -318,19 +359,36 @@ uv run gharchive-etl --version
 uv run gharchive-etl fetch --date 2024-01-15 --start-hour 0 --end-hour 0 --no-json-log
 uv run gharchive-etl fetch --date 2024-01-15 --start-hour 0 --end-hour 1 \
   --output-jsonl /tmp/gharchive-2024-01-15.jsonl --no-json-log
+uv run gharchive-etl upload --date 2024-01-15 --input-dir /tmp/data \
+  --target all --dry-run --config domains/github/ingestion/config.yaml --no-json-log
 ```
 
 확인 포인트:
+- `pytest`: 165개 테스트 전체 통과 (filter 74 + transformer 38 + d1 22 + r2 17 + upload_cli 11 + 기타 3)
+- `ruff check/format`: 린트/포매팅 오류 없음
 - `fetch` 성공 시 요약 로그(`FETCH_SUMMARY`)가 출력되고 exit code `0`
 - 일부 시간대 실패 시 실패 시간 목록 출력 후 exit code `1`
 - `--output-jsonl`에는 필터 통과 이벤트만 기록됨
 - `404` 시간대는 경고만 남기고 다음 시간대로 진행
+- `upload` 성공 시 `Upload complete` 요약 출력, exit code `0`
+- `upload` 에러 발생 시 에러 건수 출력 후 exit code `1`
+- `--dry-run` 시 실제 업로드 없이 `DRY RUN` 표시, auth/install 사전 검증은 수행
 
-### 8-2. 현재 미구현 범위(후속 티켓)
+### 8-3. upload 환경변수
 
-- R2 실제 업로드 (`r2.py`)
-- D1 실제 적재 (`d1.py`)
+| 환경변수 | 용도 | 필수 조건 |
+|----------|------|-----------|
+| `CLOUDFLARE_ACCOUNT_ID` | D1 HTTP API 계정 ID | `--target d1` 또는 `all` |
+| `CLOUDFLARE_API_TOKEN` | D1 HTTP API 인증 토큰 | `--target d1` 또는 `all` |
+| `D1_DATABASE_ID` | D1 데이터베이스 ID 오버라이드 | 선택 (config.yaml 우선) |
+
+R2 업로드는 `wrangler login` 또는 `CLOUDFLARE_API_TOKEN` 환경변수를 통한 Wrangler CLI 인증을 사용한다.
+
+### 8-4. 현재 미구현 범위(후속 티켓)
+
+- `fetch → upload` 자동 연결 파이프라인 (현재 수동 `--input-dir` 지정)
 - 병렬 다운로드/스케줄러 연동
+- CI/CD 파이프라인 연동
 
 ---
 
@@ -344,11 +402,17 @@ uv run gharchive-etl fetch --date 2024-01-15 --start-hour 0 --end-hour 1 \
 - 인덱스 누락 여부 확인 (`sqlite_master` 조회)
 - 시드 재적용 시 `INSERT OR IGNORE`로 중복 안전한지 확인
 
-3. ETL 실행 요청이 들어왔을 때
+3. ETL fetch 실행 이상 시
 - `uv run gharchive-etl fetch ... --no-json-log`로 재현 후 실패 시간대/이벤트 코드 확인
 - `NETWORK_ERROR`가 반복되면 네트워크/gharchive 상태를 점검하고 시간대 단위로 재실행
 - `PARSE_ERROR` 비율이 높으면 원본 시간대 gzip 손상 여부와 파서 로그를 우선 확인
-- 적재 이슈는 ETL fetch 범위가 아니라 후속 `r2.py`/`d1.py` 구현 범위인지 분리 확인
+
+4. ETL upload 실행 이상 시
+- exit code `1`이면 `ERROR: N upload error(s) occurred` 메시지 확인 후 각 에러 로그 추적
+- D1 적재 실패: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` 환경변수 설정 확인, D1 API 429/5xx는 자동 재시도됨
+- R2 업로드 실패: `wrangler whoami`로 인증 확인, `wrangler r2 object put` 수동 테스트
+- `--dry-run`으로 환경 검증 후 실제 업로드 수행 권장
+- 배치 크기 초과(700KB) 행은 자동 스킵되며 경고 로그가 남음
 
 ---
 
@@ -363,6 +427,8 @@ uv run gharchive-etl fetch --date 2024-01-15 --start-hour 0 --end-hour 1 \
   - `ticket-system/ticket-done/[catalog]005-D1-카탈로그-스키마-설계.md`
   - `ticket-system/ticket-done/[catalog]006-hono-api-보일러플레이트.md`
   - `ticket-system/ticket-done/[catalog]007-react-vite-프로젝트-셋업.md`
+  - `ticket-system/ticket-done/[github-archive]009-이벤트-필터링-가공-로직.md`
+  - `ticket-system/ticket-done/[github-archive]010-wrangler-업로드-스크립트.md`
 - 운영 상세
   - `infra/README.md`
   - `domains/catalog/storage/README.md`

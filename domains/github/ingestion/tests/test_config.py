@@ -27,7 +27,7 @@ class TestLoadConfig:
         config = load_config(config_path)
         assert config.http.download_timeout_sec == 120
         assert config.http.max_retries == 3
-        assert config.r2.bucket_name == "gharchive-raw"
+        assert config.r2.bucket_name == "github-archive-raw"
 
     def test_load_empty_config_raises(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.yaml"

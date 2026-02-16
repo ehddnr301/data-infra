@@ -56,7 +56,7 @@ def sample_config_data() -> dict[str, Any]:
             "max_concurrency": 4,
             "user_agent": "gharchive-etl/0.1.0 (pseudolab)",
         },
-        "r2": {"bucket_name": "gharchive-raw", "prefix": "raw/github-archive"},
+        "r2": {"bucket_name": "github-archive-raw", "prefix": "raw/github-archive"},
         "d1": {"database_id": "test-db-id"},
     }
 

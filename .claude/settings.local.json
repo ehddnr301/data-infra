@@ -27,7 +27,9 @@
       "Bash(curl:*)",
       "Bash(gunzip:*)",
       "Bash(pnpm wrangler d1 migrations apply:*)",
-      "Bash(xargs:*)"
+      "Bash(xargs:*)",
+      "Bash(python -c:*)",
+      "mcp__plugin_oh-my-claudecode_t__state_clear"
     ]
   }
 }

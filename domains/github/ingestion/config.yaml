@@ -30,7 +30,7 @@ http:
 
 # R2 설정
 r2:
-  bucket_name: "gharchive-raw"
+  bucket_name: "github-archive-raw"
   prefix: "raw/github-archive"
 
 # D1 설정 (HTTP API)

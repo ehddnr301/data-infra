@@ -15,8 +15,12 @@ import click
 import orjson
 
 from gharchive_etl.config import load_config
+from gharchive_etl.d1 import _validate_d1_auth, insert_daily_stats, insert_events
 from gharchive_etl.downloader import HourStats, process_hour
 from gharchive_etl.logging_config import setup_logging
+from gharchive_etl.models import GitHubEvent
+from gharchive_etl.r2 import _check_wrangler_installed, upload_events_to_r2
+from gharchive_etl.transformer import compute_daily_stats, transform_events
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +235,188 @@ def _log_summary(
         logger.info(summary_msg, extra=log_extra)
 
     click.echo(summary_msg)
+
+
+def _load_jsonl(path: Path) -> tuple[list[GitHubEvent], int]:
+    """JSONL 파일을 읽어 GitHubEvent 리스트로 변환한다.
+
+    Args:
+        path: JSONL 파일 경로
+
+    Returns:
+        (events_list, error_count) 튜플
+    """
+    events: list[GitHubEvent] = []
+    errors = 0
+    with open(path, "rb") as f:
+        for line_no, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = orjson.loads(line)
+                event = GitHubEvent.model_validate(data)
+                events.append(event)
+            except Exception as exc:
+                errors += 1
+                logger.warning("Parse error at %s line %d: %s", path.name, line_no, exc)
+    return events, errors
+
+
+@main.command()
+@click.option("--date", "single_date", default=None, help="업로드 대상 날짜 (예: 2024-01-15)")
+@click.option("--start-date", default=None, help="범위 시작 날짜 (예: 2024-01-01)")
+@click.option("--end-date", default=None, help="범위 종료 날짜 (예: 2024-01-31)")
+@click.option(
+    "--input-dir",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="JSONL 파일이 있는 디렉터리 경로",
+)
+@click.option(
+    "--target",
+    type=click.Choice(["r2", "d1", "all"]),
+    default="all",
+    help="업로드 대상 (r2, d1, all 중 택1, 기본: all)",
+)
+@click.option("--dry-run", is_flag=True, default=False, help="실제 업로드 없이 시뮬레이션")
+@click.option(
+    "--config",
+    "config_path",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="설정 파일 경로 (기본: 패키지 내부 config.yaml)",
+)
+@click.option("--json-log/--no-json-log", default=True, help="JSON 로그 포맷 (기본: 활성)")
+def upload(
+    single_date: str | None,
+    start_date: str | None,
+    end_date: str | None,
+    input_dir: Path,
+    target: str,
+    dry_run: bool,
+    config_path: Path | None,
+    json_log: bool,
+) -> None:
+    """JSONL 파일을 R2/D1에 업로드합니다.
+
+    fetch 명령으로 생성된 JSONL 파일을 읽어 Cloudflare R2 및/또는 D1에 적재합니다.
+    """
+    setup_logging(json_format=json_log)
+
+    # ── 입력 검증 ──
+    _validate_date_options(single_date, start_date, end_date)
+
+    # 날짜 범위 결정
+    if single_date:
+        dates = [_parse_date(single_date)]
+    else:
+        assert start_date is not None and end_date is not None
+        s = _parse_date(start_date)
+        e = _parse_date(end_date)
+        if s > e:
+            raise click.BadParameter(f"start-date({s})가 end-date({e})보다 늦습니다")
+        dates = _date_range(s, e)
+
+    # 설정 로딩
+    config = load_config(config_path)
+
+    # ── 사전 검증 ──
+    if target in ("d1", "all"):
+        try:
+            _validate_d1_auth(config.d1)
+        except RuntimeError as exc:
+            click.echo(f"D1 auth error: {exc}", err=True)
+            sys.exit(1)
+
+    if target in ("r2", "all"):
+        try:
+            _check_wrangler_installed()
+        except RuntimeError as exc:
+            click.echo(f"Wrangler error: {exc}", err=True)
+            sys.exit(1)
+
+    # ── 실행 ──
+    total_parse_errors = 0
+    total_events_processed = 0
+    total_upload_errors: list[str] = []
+    dates_processed = 0
+    dates_skipped = 0
+
+    for batch_date in dates:
+        date_str = batch_date.strftime("%Y-%m-%d")
+        jsonl_path = input_dir / f"{date_str}.jsonl"
+
+        if not jsonl_path.exists():
+            logger.warning("JSONL file not found, skipping: %s", jsonl_path)
+            click.echo(f"[SKIP] {date_str}: {jsonl_path} not found")
+            dates_skipped += 1
+            continue
+
+        click.echo(f"[LOAD] {date_str}: loading {jsonl_path.name}...")
+        events, parse_errors = _load_jsonl(jsonl_path)
+        total_parse_errors += parse_errors
+        total_events_processed += len(events)
+
+        if parse_errors:
+            click.echo(f"  parse errors: {parse_errors}")
+
+        if not events:
+            click.echo(f"  no events to upload for {date_str}")
+            continue
+
+        # R2 업로드
+        if target in ("r2", "all"):
+            click.echo(f"  [R2] uploading {len(events)} events...")
+            r2_result = upload_events_to_r2(events, date_str, config.r2, dry_run=dry_run)
+            click.echo(
+                f"  [R2] files={r2_result.files_uploaded}, "
+                f"bytes={r2_result.bytes_total}, "
+                f"errors={len(r2_result.errors)}"
+            )
+            total_upload_errors.extend(r2_result.errors)
+
+        # D1 적재
+        if target in ("d1", "all"):
+            click.echo(f"  [D1] transforming {len(events)} events...")
+            rows, _transform_stats = transform_events(events, date_str)
+
+            click.echo(f"  [D1] inserting {len(rows)} event rows...")
+            events_result = insert_events(rows, config.d1, dry_run=dry_run)
+            click.echo(
+                f"  [D1] events inserted={events_result.rows_inserted}, "
+                f"errors={len(events_result.errors)}"
+            )
+            total_upload_errors.extend(events_result.errors)
+
+            daily = compute_daily_stats(rows)
+            click.echo(f"  [D1] upserting {len(daily)} daily stats...")
+            stats_result = insert_daily_stats(daily, config.d1, dry_run=dry_run)
+            click.echo(
+                f"  [D1] stats inserted={stats_result.rows_inserted}, "
+                f"errors={len(stats_result.errors)}"
+            )
+            total_upload_errors.extend(stats_result.errors)
+
+        dates_processed += 1
+
+    # ── 최종 요약 ──
+    summary = (
+        f"Upload complete: "
+        f"dates_processed={dates_processed}, "
+        f"dates_skipped={dates_skipped}, "
+        f"events={total_events_processed}, "
+        f"parse_errors={total_parse_errors}"
+    )
+    if dry_run:
+        summary += " (DRY RUN)"
+
+    click.echo(summary)
+    logger.info(summary)
+
+    if total_upload_errors:
+        click.echo(f"ERROR: {len(total_upload_errors)} upload error(s) occurred", err=True)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

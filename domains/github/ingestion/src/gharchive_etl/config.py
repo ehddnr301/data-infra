@@ -28,13 +28,15 @@ class HttpConfig(BaseModel):
 
 
 class R2Config(BaseModel):
-    bucket_name: str = "gharchive-raw"
+    bucket_name: str = "github-archive-raw"
     prefix: str = "raw/github-archive"
     endpoint: str | None = None
 
 
 class D1Config(BaseModel):
     database_id: str = ""
+    account_id: str = ""
+    api_token: str = ""
 
 
 class AppConfig(BaseModel):
@@ -84,5 +86,13 @@ def load_config(path: Path | None = None) -> AppConfig:
     if d1_id := os.environ.get("D1_DATABASE_ID"):
         raw.setdefault("d1", {})
         raw["d1"]["database_id"] = d1_id
+
+    if account_id := os.environ.get("CLOUDFLARE_ACCOUNT_ID"):
+        raw.setdefault("d1", {})
+        raw["d1"]["account_id"] = account_id
+
+    if api_token := os.environ.get("CLOUDFLARE_API_TOKEN"):
+        raw.setdefault("d1", {})
+        raw["d1"]["api_token"] = api_token
 
     return AppConfig.model_validate(raw)
