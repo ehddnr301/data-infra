@@ -1,0 +1,7 @@
+name = "pseudolab-catalog-storage"
+compatibility_date = "2024-12-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pseudolab-main"
+database_id = "e7f4cab0-3293-4942-988f-38d9e97e14b2"
