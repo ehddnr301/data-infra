@@ -10,10 +10,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@hono/zod-validator": "^0.7.4",
     "@pseudolab/shared-types": "workspace:*",
-    "hono": "^4"
+    "hono": "^4",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.8.44",
     "@cloudflare/workers-types": "^4",
     "vitest": "^2",
     "wrangler": "^4"

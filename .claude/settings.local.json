@@ -25,7 +25,9 @@
       "mcp__plugin_oh-my-claudecode_x__ask_codex",
       "WebFetch(domain:data.gharchive.org)",
       "Bash(curl:*)",
-      "Bash(gunzip:*)"
+      "Bash(gunzip:*)",
+      "Bash(pnpm wrangler d1 migrations apply:*)",
+      "Bash(xargs:*)"
     ]
   }
 }
