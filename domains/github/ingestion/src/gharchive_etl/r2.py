@@ -135,6 +135,7 @@ def _wrangler_r2_put(
                     f"{bucket}/{key}",
                     "--file",
                     str(file_path),
+                    "--remote",
                 ],
                 capture_output=True,
                 check=True,

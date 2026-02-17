@@ -1,0 +1,12 @@
+.venv/
+.venv-airflow/
+.ruff_cache/
+__pycache__/
+*.pyc
+.env
+.omc/
+data/*.jsonl
+data/*.json.gz
+tests/
+dags/
+.git/
