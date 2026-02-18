@@ -1,9 +1,9 @@
 """D1 HTTP API 클라이언트.
 
-Cloudflare D1 HTTP API를 통해 이벤트 및 일별 통계를 적재한다.
+Cloudflare D1 HTTP API를 통해 DL 테이블 및 일별 통계를 적재한다.
 - parameterized query만 사용 (SQL injection 방지)
-- INSERT OR IGNORE로 멱등성 보장 (event.id PRIMARY KEY)
-- 바이트 기반 동적 배치 분할 (700KB + 500행 제한)
+- INSERT OR IGNORE로 멱등성 보장
+- 바이트 기반 동적 배치 분할 (700KB + 동적 행 제한)
 """
 
 from __future__ import annotations
@@ -19,13 +19,16 @@ from typing import Any, TypeVar
 import httpx
 
 from gharchive_etl.config import D1Config
-from gharchive_etl.transformer import DailyStatsRow, EventRow
+from gharchive_etl.dl_models import DL_TABLE_COLUMNS, DL_TABLES, EXPLODED_TABLES, TABLE_TO_EVENT_TYPE
+from gharchive_etl.transformer import DLRowsByTable, DailyStatsRow
 
 logger = logging.getLogger(__name__)
 
 _D1_API_BASE = "https://api.cloudflare.com/client/v4/accounts"
 MAX_BATCH_BYTES = 700_000  # 700KB
-MAX_BATCH_ROWS = 500
+# D1 HTTP API는 쿼리당 바인딩 파라미터 최대 100개 제한
+# 테이블별 컬럼 수에 따라 동적 계산: floor(100 / len(columns))
+MAX_BINDING_PARAMS = 100
 
 T = TypeVar("T")
 
@@ -116,6 +119,49 @@ def _d1_query(
     )
 
 
+def query_rows(sql: str, params: list[Any], config: D1Config) -> list[dict[str, Any]]:
+    """D1에서 SELECT 결과를 dict 리스트로 반환한다."""
+    resp = _d1_query(sql, params, config)
+    try:
+        results = resp["result"][0]["results"]
+        return results if isinstance(results, list) else []
+    except (KeyError, IndexError, TypeError):
+        return []
+
+
+def compute_daily_stats_from_dl(batch_date: str, config: D1Config) -> list[DailyStatsRow]:
+    """D1에 저장된 DL 테이블 기준으로 daily_stats를 재계산한다.
+
+    verify-aggregation과 동일한 집계 기준을 사용해 불일치를 방지한다.
+    """
+    counter: dict[tuple[str, str, str, str], int] = {}
+
+    for table_name in DL_TABLES:
+        event_type = TABLE_TO_EVENT_TYPE.get(table_name, table_name)
+        if table_name in EXPLODED_TABLES:
+            sql = (
+                f"SELECT COALESCE(organization,'') AS org_name, repo_name, "
+                f"COUNT(DISTINCT event_id) AS cnt FROM {table_name} "
+                f"WHERE base_date = ? GROUP BY organization, repo_name"
+            )
+        else:
+            sql = (
+                f"SELECT COALESCE(organization,'') AS org_name, repo_name, "
+                f"COUNT(*) AS cnt FROM {table_name} "
+                f"WHERE base_date = ? GROUP BY organization, repo_name"
+            )
+
+        rows = query_rows(sql, [batch_date], config)
+        for row in rows:
+            key = (batch_date, row["org_name"], row["repo_name"], event_type)
+            counter[key] = counter.get(key, 0) + row["cnt"]
+
+    return [
+        DailyStatsRow(date=k[0], org_name=k[1], repo_name=k[2], event_type=k[3], count=v)
+        for k, v in sorted(counter.items())
+    ]
+
+
 def _build_batch_insert_sql(
     table: str,
     columns: list[str],
@@ -130,29 +176,33 @@ def _build_batch_insert_sql(
     return f"INSERT OR {conflict_action} INTO {table} ({cols}) VALUES {values}"
 
 
-def _build_batches(
-    rows: list[EventRow],
+def _build_dl_batches(
+    rows: list[dict[str, Any]],
     columns: list[str],
-) -> tuple[list[list[EventRow]], int]:
+    max_rows_per_batch: int,
+) -> tuple[list[list[dict[str, Any]]], int]:
     """바이트 기반으로 행을 배치로 분할한다."""
-    batches: list[list[EventRow]] = []
-    current_batch: list[EventRow] = []
+    batches: list[list[dict[str, Any]]] = []
+    current_batch: list[dict[str, Any]] = []
     current_bytes = 0
     skipped_oversized = 0
 
     for row in rows:
-        row_data = [row[c] for c in columns]  # type: ignore[literal-required]
+        row_data = [row.get(c) for c in columns]
         row_bytes = len(json.dumps(row_data).encode())
 
         if row_bytes > MAX_BATCH_BYTES:
             logger.warning(
-                "Oversized row skipped (%.1f KB): id=%s", row_bytes / 1024, row.get("id", "?")
+                "Oversized row skipped (%.1f KB): event_id=%s",
+                row_bytes / 1024,
+                row.get("event_id", "?"),
             )
             skipped_oversized += 1
             continue
 
         if current_batch and (
-            current_bytes + row_bytes > MAX_BATCH_BYTES or len(current_batch) >= MAX_BATCH_ROWS
+            current_bytes + row_bytes > MAX_BATCH_BYTES
+            or len(current_batch) >= max_rows_per_batch
         ):
             batches.append(current_batch)
             current_batch = []
@@ -180,15 +230,17 @@ def _validate_d1_auth(config: D1Config) -> None:
         raise RuntimeError(f"D1 auth config missing: {', '.join(missing)}")
 
 
-def insert_events(
-    rows: list[EventRow],
+def insert_dl_rows(
+    table_name: str,
+    columns: list[str],
+    rows: list[dict[str, Any]],
     config: D1Config,
     *,
     dry_run: bool = False,
     max_retries: int = 3,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> D1InsertResult:
-    """이벤트를 D1에 적재한다."""
+    """범용 DL 테이블 적재."""
     _validate_d1_auth(config)
 
     result = D1InsertResult(total_rows=len(rows), dry_run=dry_run)
@@ -196,33 +248,28 @@ def insert_events(
     if not rows:
         return result
 
-    columns = [
-        "id",
-        "type",
-        "actor_login",
-        "repo_name",
-        "org_name",
-        "payload",
-        "created_at",
-        "batch_date",
-    ]
-    batches, skipped = _build_batches(rows, columns)
+    # 컬럼 수 기반 동적 배치 크기 계산
+    max_rows_per_batch = max(1, MAX_BINDING_PARAMS // len(columns))
+    batches, skipped = _build_dl_batches(rows, columns, max_rows_per_batch)
     result.rows_skipped = skipped
 
     for i, batch in enumerate(batches):
-        sql = _build_batch_insert_sql("events", columns, len(batch))
+        sql = _build_batch_insert_sql(table_name, columns, len(batch))
         params: list[Any] = []
         for row in batch:
-            params.extend(row[c] for c in columns)  # type: ignore[literal-required]
+            params.extend(row.get(c) for c in columns)
 
         if dry_run:
-            logger.info("Dry run batch %d/%d: %d rows", i + 1, len(batches), len(batch))
+            logger.info(
+                "Dry run batch %d/%d (%s): %d rows",
+                i + 1, len(batches), table_name, len(batch),
+            )
         else:
             try:
                 _d1_query(sql, params, config, max_retries=max_retries)
                 result.rows_inserted += len(batch)
             except Exception as e:
-                error_msg = f"Batch {i + 1}/{len(batches)} failed: {e}"
+                error_msg = f"Batch {i + 1}/{len(batches)} ({table_name}) failed: {e}"
                 result.errors.append(error_msg)
                 logger.error(error_msg)
 
@@ -234,6 +281,24 @@ def insert_events(
     return result
 
 
+def insert_all_dl_rows(
+    rows_by_table: DLRowsByTable,
+    config: D1Config,
+    *,
+    dry_run: bool = False,
+    max_retries: int = 3,
+) -> dict[str, D1InsertResult]:
+    """DLRowsByTable 전체를 각 테이블에 적재한다."""
+    results: dict[str, D1InsertResult] = {}
+    for table_name, rows in rows_by_table.items():
+        columns = DL_TABLE_COLUMNS[table_name]
+        results[table_name] = insert_dl_rows(
+            table_name, columns, rows, config,
+            dry_run=dry_run, max_retries=max_retries,
+        )
+    return results
+
+
 def insert_daily_stats(
     stats: list[DailyStatsRow],
     config: D1Config,
@@ -241,13 +306,32 @@ def insert_daily_stats(
     dry_run: bool = False,
     max_retries: int = 3,
 ) -> D1InsertResult:
-    """일별 통계를 D1에 UPSERT한다."""
+    """일별 통계를 D1에 적재한다 (DELETE + INSERT로 멱등성 보장).
+
+    해당 날짜의 기존 행을 삭제한 뒤 새로 삽입하여,
+    재실행 시 stale 행이 잔류하지 않도록 한다.
+    """
     _validate_d1_auth(config)
 
     result = D1InsertResult(total_rows=len(stats), dry_run=dry_run)
 
     if not stats:
         return result
+
+    # 해당 날짜의 기존 행 삭제 (멱등성 보장)
+    dates = sorted({stat["date"] for stat in stats})  # type: ignore[literal-required]
+    for d in dates:
+        delete_sql = "DELETE FROM daily_stats WHERE date = ?"
+        if dry_run:
+            logger.info("Dry run delete: date=%s", d)
+        else:
+            try:
+                _d1_query(delete_sql, [d], config, max_retries=max_retries)
+            except Exception as e:
+                error_msg = f"Delete failed for date={d}: {e}"
+                result.errors.append(error_msg)
+                logger.error(error_msg)
+                return result  # DELETE 실패 시 INSERT 진행 중단
 
     columns = ["date", "org_name", "repo_name", "event_type", "count"]
 

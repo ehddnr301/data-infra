@@ -1,31 +1,410 @@
-"""이벤트 필터링 후 D1 적재를 위한 가공 로직."""
+"""이벤트 필터링 후 D1 DL 테이블 적재를 위한 가공 로직.
+
+기존 단일 events 테이블 구조에서 14개 타입별 DL 테이블 구조로 전환.
+- 각 이벤트 타입별 전용 변환 함수
+- created_at(UTC) → ts_kst(KST) + base_date(KST) 변환
+- PushEvent/GollumEvent는 배열 펼침 (1 event → N rows)
+"""
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, TypedDict
 
+from gharchive_etl.dl_models import (
+    DL_TABLE_COLUMNS,
+    EVENT_TYPE_TO_TABLE,
+    TABLE_TO_EVENT_TYPE,
+)
 from gharchive_etl.models import GitHubEvent
 
 logger = logging.getLogger(__name__)
 
+# ── 타입 별칭 ────────────────────────────────────────────────
 
-class EventRow(TypedDict):
-    """D1 events 테이블 행 타입."""
+DLRowsByTable = dict[str, list[dict[str, Any]]]
+"""테이블명 → Row 리스트 매핑."""
 
-    id: str  # event.id (PRIMARY KEY)
-    type: str  # event.type
-    actor_login: str  # event.actor.login
-    repo_name: str  # event.repo.name
-    org_name: str | None  # event.org.login (NULL 가능)
-    payload: str  # json.dumps(normalized_payload)
-    created_at: str  # ISO 8601 형식
-    batch_date: str  # YYYY-MM-DD
 
+# ── KST 변환 ─────────────────────────────────────────────────
+
+_KST = timezone(timedelta(hours=9))
+
+
+def _to_kst(created_at: datetime) -> tuple[str, str]:
+    """UTC datetime → (ts_kst ISO문자열, base_date YYYY-MM-DD) 변환.
+
+    naive datetime이면 UTC로 간주.
+    """
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    kst_dt = created_at.astimezone(_KST)
+    ts_kst = kst_dt.isoformat()
+    base_date = kst_dt.strftime("%Y-%m-%d")
+    return ts_kst, base_date
+
+
+# ── 공통 필드 빌더 ───────────────────────────────────────────
+
+def _common(event: GitHubEvent) -> dict[str, Any]:
+    """이벤트에서 공통 6개 필드를 추출한다."""
+    ts_kst, base_date = _to_kst(event.created_at)
+    return {
+        "event_id": event.id,
+        "repo_name": event.repo.name,
+        "organization": event.org.login if event.org else None,
+        "user_login": event.actor.login,
+        "ts_kst": ts_kst,
+        "base_date": base_date,
+    }
+
+
+# ── 타입별 변환 함수 ─────────────────────────────────────────
+
+def _to_push_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """PushEvent → 커밋 단위 펼침 rows."""
+    c = _common(event)
+    payload = event.payload
+    ref_full = payload.get("ref") or ""
+    ref_name = re.sub(r"^(refs/heads/|refs/tags/)", "", ref_full) if ref_full else None
+
+    push_meta = {
+        "ref_full": ref_full or None,
+        "ref_name": ref_name,
+        "is_branch_ref": 1 if ref_full.startswith("refs/heads/") else 0,
+        "is_tag_ref": 1 if ref_full.startswith("refs/tags/") else 0,
+        "head_sha": payload.get("head"),
+        "before_sha": payload.get("before"),
+    }
+
+    commits = payload.get("commits", [])
+    if not commits:
+        return [{
+            **c, **push_meta,
+            "commit_sha": "__empty__#0",
+            "commit_author_name": None,
+            "commit_author_email": None,
+            "commit_message": None,
+            "commit_distinct": None,
+            "commit_url": None,
+        }]
+
+    rows = []
+    for idx, commit in enumerate(commits):
+        rows.append({
+            **c, **push_meta,
+            "commit_sha": commit.get("sha") or f"__no_commit__#{idx}",
+            "commit_author_name": (commit.get("author") or {}).get("name"),
+            "commit_author_email": (commit.get("author") or {}).get("email"),
+            "commit_message": (commit.get("message") or "")[:200],
+            "commit_distinct": 1 if commit.get("distinct") else 0,
+            "commit_url": commit.get("url"),
+        })
+    return rows
+
+
+def _to_pull_request_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """PullRequestEvent → 1 row."""
+    c = _common(event)
+    payload = event.payload
+    pr = payload.get("pull_request", {})
+    user = pr.get("user") or {}
+    head = pr.get("head") or {}
+    base = pr.get("base") or {}
+    return [{
+        **c,
+        "pr_action": payload.get("action"),
+        "pr_number": payload.get("number"),
+        "pr_title": pr.get("title"),
+        "pr_html_url": pr.get("html_url"),
+        "pr_state": pr.get("state"),
+        "is_draft": 1 if pr.get("draft") else (0 if pr.get("draft") is not None else None),
+        "pr_body": pr.get("body"),
+        "pr_author_login": user.get("login"),
+        "pr_author_id": user.get("id"),
+        "head_ref": head.get("ref"),
+        "base_ref": base.get("ref"),
+        "head_sha": head.get("sha"),
+        "base_sha": base.get("sha"),
+        "commits_count": pr.get("commits"),
+        "additions": pr.get("additions"),
+        "deletions": pr.get("deletions"),
+        "changed_files": pr.get("changed_files"),
+        "issue_comments_count": pr.get("comments"),
+        "review_comments_count": pr.get("review_comments"),
+        "is_merged": 1 if pr.get("merged") else (0 if pr.get("merged") is not None else None),
+        "merge_commit_sha": pr.get("merge_commit_sha"),
+    }]
+
+
+def _to_issues_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """IssuesEvent → 1 row."""
+    c = _common(event)
+    payload = event.payload
+    issue = payload.get("issue", {})
+    user = issue.get("user") or {}
+    return [{
+        **c,
+        "issue_action": payload.get("action"),
+        "issue_number": issue.get("number"),
+        "issue_title": issue.get("title"),
+        "issue_body": issue.get("body"),
+        "issue_state": issue.get("state"),
+        "issue_html_url": issue.get("html_url"),
+        "issue_author_login": user.get("login"),
+        "issue_author_id": user.get("id"),
+    }]
+
+
+def _to_issue_comment_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """IssueCommentEvent → 1 row."""
+    c = _common(event)
+    payload = event.payload
+    issue = payload.get("issue", {})
+    comment = payload.get("comment", {})
+    issue_user = issue.get("user") or {}
+    comment_user = comment.get("user") or {}
+    return [{
+        **c,
+        "ic_action": payload.get("action"),
+        "issue_number": issue.get("number"),
+        "issue_title": issue.get("title"),
+        "issue_state": issue.get("state"),
+        "issue_html_url": issue.get("html_url"),
+        "issue_author_login": issue_user.get("login"),
+        "issue_author_id": issue_user.get("id"),
+        "comment_id": comment.get("id"),
+        "comment_html_url": comment.get("html_url"),
+        "comment_body": comment.get("body"),
+        "commenter_login": comment_user.get("login"),
+        "commenter_id": comment_user.get("id"),
+    }]
+
+
+def _to_watch_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """WatchEvent → 1 row (공통 필드만)."""
+    return [_common(event)]
+
+
+def _to_fork_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """ForkEvent → 1 row."""
+    c = _common(event)
+    forkee = event.payload.get("forkee", {})
+    owner = forkee.get("owner") or {}
+    return [{
+        **c,
+        "forkee_id": forkee.get("id"),
+        "forkee_full_name": forkee.get("full_name"),
+        "forkee_html_url": forkee.get("html_url"),
+        "forkee_owner_login": owner.get("login"),
+        "forkee_owner_id": owner.get("id"),
+        "forkee_description": forkee.get("description"),
+        "is_fork_private": 1 if forkee.get("private") else (0 if forkee.get("private") is not None else None),
+        "forkee_default_branch": forkee.get("default_branch"),
+    }]
+
+
+def _to_create_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """CreateEvent → 1 row."""
+    c = _common(event)
+    payload = event.payload
+    ref_type = payload.get("ref_type", "")
+    return [{
+        **c,
+        "created_ref_type": ref_type or None,
+        "created_ref_name": payload.get("ref"),
+        "default_branch": payload.get("master_branch"),
+        "repo_description": payload.get("description"),
+        "pusher_type": payload.get("pusher_type"),
+        "is_repo_creation": 1 if ref_type == "repository" else 0,
+        "is_branch_creation": 1 if ref_type == "branch" else 0,
+        "is_tag_creation": 1 if ref_type == "tag" else 0,
+    }]
+
+
+def _to_delete_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """DeleteEvent → 1 row."""
+    c = _common(event)
+    payload = event.payload
+    ref_type = payload.get("ref_type", "")
+    return [{
+        **c,
+        "deleted_ref_type": ref_type or None,
+        "deleted_ref_name": payload.get("ref"),
+        "pusher_type": payload.get("pusher_type"),
+        "is_branch_deletion": 1 if ref_type == "branch" else 0,
+        "is_tag_deletion": 1 if ref_type == "tag" else 0,
+    }]
+
+
+def _to_pull_request_review_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """PullRequestReviewEvent → 1 row."""
+    c = _common(event)
+    payload = event.payload
+    review = payload.get("review", {})
+    pr = payload.get("pull_request", {})
+    reviewer = review.get("user") or {}
+    pr_user = pr.get("user") or {}
+
+    submitted_at_utc = review.get("submitted_at")
+    submitted_at_kst = None
+    if submitted_at_utc:
+        try:
+            raw = submitted_at_utc
+            if raw.endswith("Z"):
+                raw = raw[:-1] + "+00:00"
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            submitted_at_kst = dt.astimezone(_KST).isoformat()
+        except (ValueError, TypeError):
+            pass
+
+    return [{
+        **c,
+        "reviewer_login": reviewer.get("login"),
+        "reviewer_id": reviewer.get("id"),
+        "review_state": review.get("state"),
+        "review_body": review.get("body"),
+        "review_html_url": review.get("html_url"),
+        "commit_sha": review.get("commit_id"),
+        "review_submitted_at_utc": submitted_at_utc,
+        "review_submitted_at_kst": submitted_at_kst,
+        "pr_number": pr.get("number"),
+        "pr_title": pr.get("title"),
+        "pr_html_url": pr.get("html_url"),
+        "pr_author_login": pr_user.get("login"),
+    }]
+
+
+def _to_pull_request_review_comment_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """PullRequestReviewCommentEvent → 1 row."""
+    c = _common(event)
+    payload = event.payload
+    comment = payload.get("comment", {})
+    pr = payload.get("pull_request", {})
+    comment_user = comment.get("user") or {}
+    return [{
+        **c,
+        "pr_review_comment_action": payload.get("action"),
+        "review_comment_id": comment.get("id"),
+        "review_comment_html_url": comment.get("html_url"),
+        "review_comment_body": comment.get("body"),
+        "diff_hunk": comment.get("diff_hunk"),
+        "file_path": comment.get("path"),
+        "commit_id": comment.get("commit_id"),
+        "review_id": comment.get("pull_request_review_id"),
+        "commenter_login": comment_user.get("login"),
+        "commenter_id": comment_user.get("id"),
+        "pr_number": pr.get("number"),
+        "pr_title": pr.get("title"),
+        "pr_html_url": pr.get("html_url"),
+        "pr_state": pr.get("state"),
+    }]
+
+
+def _to_member_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """MemberEvent → 1 row."""
+    c = _common(event)
+    payload = event.payload
+    member = payload.get("member", {})
+    action = payload.get("action", "")
+    return [{
+        **c,
+        "member_login": member.get("login"),
+        "member_id": member.get("id"),
+        "member_html_url": member.get("html_url"),
+        "member_action": action or None,
+        "is_member_added": 1 if action == "added" else 0,
+        "is_member_removed": 1 if action == "removed" else 0,
+    }]
+
+
+def _to_gollum_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """GollumEvent → 페이지 단위 펼침 rows."""
+    c = _common(event)
+    pages = event.payload.get("pages", [])
+
+    if not pages:
+        return [{
+            **c,
+            "page_name": "__empty__#0",
+            "page_title": None,
+            "page_summary": None,
+            "page_action": None,
+            "page_sha": None,
+            "page_html_url": None,
+            "is_page_created": 0,
+            "is_page_edited": 0,
+            "is_page_deleted": 0,
+        }]
+
+    rows = []
+    for idx, page in enumerate(pages):
+        action = page.get("action", "")
+        rows.append({
+            **c,
+            "page_name": page.get("page_name") or f"__no_page__#{idx}",
+            "page_title": page.get("title"),
+            "page_summary": page.get("summary"),
+            "page_action": action or None,
+            "page_sha": page.get("sha"),
+            "page_html_url": page.get("html_url"),
+            "is_page_created": 1 if action == "created" else 0,
+            "is_page_edited": 1 if action == "edited" else 0,
+            "is_page_deleted": 1 if action == "deleted" else 0,
+        })
+    return rows
+
+
+def _to_release_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """ReleaseEvent → 1 row."""
+    c = _common(event)
+    payload = event.payload
+    release = payload.get("release", {})
+    author = release.get("author") or {}
+    prerelease = release.get("prerelease")
+    return [{
+        **c,
+        "release_action": payload.get("action"),
+        "tag_name": release.get("tag_name"),
+        "release_name": release.get("name"),
+        "is_prerelease": 1 if prerelease else (0 if prerelease is not None else None),
+        "release_html_url": release.get("html_url"),
+        "release_author_login": author.get("login"),
+    }]
+
+
+def _to_public_event_rows(event: GitHubEvent) -> list[dict[str, Any]]:
+    """PublicEvent → 1 row (공통 필드만)."""
+    return [_common(event)]
+
+
+# ── 변환 함수 디스패치 테이블 ────────────────────────────────
+
+_CONVERTERS: dict[str, Callable[[GitHubEvent], list[dict[str, Any]]]] = {
+    "PushEvent": _to_push_event_rows,
+    "PullRequestEvent": _to_pull_request_event_rows,
+    "IssuesEvent": _to_issues_event_rows,
+    "IssueCommentEvent": _to_issue_comment_event_rows,
+    "WatchEvent": _to_watch_event_rows,
+    "ForkEvent": _to_fork_event_rows,
+    "CreateEvent": _to_create_event_rows,
+    "DeleteEvent": _to_delete_event_rows,
+    "PullRequestReviewEvent": _to_pull_request_review_event_rows,
+    "PullRequestReviewCommentEvent": _to_pull_request_review_comment_event_rows,
+    "MemberEvent": _to_member_event_rows,
+    "GollumEvent": _to_gollum_event_rows,
+    "ReleaseEvent": _to_release_event_rows,
+    "PublicEvent": _to_public_event_rows,
+}
+
+
+# ── 통계 ─────────────────────────────────────────────────────
 
 @dataclass
 class TransformStats:
@@ -33,354 +412,100 @@ class TransformStats:
 
     total_input: int = 0
     total_output: int = 0
-    duplicates_removed: int = 0
+    skipped: int = 0
     validation_errors: int = 0
     input_type_counts: dict[str, int] = field(default_factory=dict)
-    output_type_counts: dict[str, int] = field(default_factory=dict)
+    output_table_counts: dict[str, int] = field(default_factory=dict)
     error_details: list[str] = field(default_factory=list)
 
 
-# Payload Extractors
+# ── Row 검증 ─────────────────────────────────────────────────
+
+_TS_KST_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+_BASE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def _extract_push(payload: dict[str, Any]) -> dict[str, Any]:
-    """PushEvent 페이로드 추출."""
-    commits = payload.get("commits", [])
-    return {
-        "size": payload.get("size"),
-        "distinct_size": payload.get("distinct_size"),
-        "ref": payload.get("ref"),
-        "commits": [
-            {
-                "sha": c.get("sha"),
-                "message": (c.get("message") or "")[:200],
-            }
-            for c in commits
-        ],
-    }
-
-
-def _extract_pull_request(payload: dict[str, Any]) -> dict[str, Any]:
-    """PullRequestEvent 페이로드 추출."""
-    pr = payload.get("pull_request", {})
-    return {
-        "action": payload.get("action"),
-        "number": payload.get("number"),
-        "title": pr.get("title"),
-        "state": pr.get("state"),
-        "merged": pr.get("merged"),
-        "additions": pr.get("additions"),
-        "deletions": pr.get("deletions"),
-        "changed_files": pr.get("changed_files"),
-    }
-
-
-def _extract_issues(payload: dict[str, Any]) -> dict[str, Any]:
-    """IssuesEvent 페이로드 추출."""
-    issue = payload.get("issue", {})
-    labels = issue.get("labels", [])
-    return {
-        "action": payload.get("action"),
-        "number": issue.get("number"),
-        "title": issue.get("title"),
-        "state": issue.get("state"),
-        "labels": [label.get("name") for label in labels],
-    }
-
-
-def _extract_issue_comment(payload: dict[str, Any]) -> dict[str, Any]:
-    """IssueCommentEvent 페이로드 추출."""
-    issue = payload.get("issue", {})
-    comment = payload.get("comment", {})
-    return {
-        "action": payload.get("action"),
-        "issue_number": issue.get("number"),
-        "comment_id": comment.get("id"),
-    }
-
-
-def _extract_watch(payload: dict[str, Any]) -> dict[str, Any]:
-    """WatchEvent 페이로드 추출."""
-    return {
-        "action": payload.get("action"),
-    }
-
-
-def _extract_fork(payload: dict[str, Any]) -> dict[str, Any]:
-    """ForkEvent 페이로드 추출."""
-    forkee = payload.get("forkee", {})
-    return {
-        "forkee_full_name": forkee.get("full_name"),
-    }
-
-
-def _extract_create(payload: dict[str, Any]) -> dict[str, Any]:
-    """CreateEvent 페이로드 추출."""
-    return {
-        "ref": payload.get("ref"),
-        "ref_type": payload.get("ref_type"),
-        "master_branch": payload.get("master_branch"),
-    }
-
-
-def _extract_delete(payload: dict[str, Any]) -> dict[str, Any]:
-    """DeleteEvent 페이로드 추출."""
-    return {
-        "ref": payload.get("ref"),
-        "ref_type": payload.get("ref_type"),
-    }
-
-
-def _extract_release(payload: dict[str, Any]) -> dict[str, Any]:
-    """ReleaseEvent 페이로드 추출."""
-    release = payload.get("release", {})
-    return {
-        "action": payload.get("action"),
-        "tag_name": release.get("tag_name"),
-        "name": release.get("name"),
-        "prerelease": release.get("prerelease"),
-    }
-
-
-def _extract_pull_request_review(payload: dict[str, Any]) -> dict[str, Any]:
-    """PullRequestReviewEvent 페이로드 추출."""
-    review = payload.get("review", {})
-    pr = payload.get("pull_request", {})
-    return {
-        "action": payload.get("action"),
-        "review_state": review.get("state"),
-        "pull_request_number": pr.get("number"),
-    }
-
-
-def _extract_pull_request_review_comment(payload: dict[str, Any]) -> dict[str, Any]:
-    """PullRequestReviewCommentEvent 페이로드 추출."""
-    comment = payload.get("comment", {})
-    pr = payload.get("pull_request", {})
-    return {
-        "action": payload.get("action"),
-        "comment_id": comment.get("id"),
-        "pull_request_number": pr.get("number"),
-    }
-
-
-def _extract_member(payload: dict[str, Any]) -> dict[str, Any]:
-    """MemberEvent 페이로드 추출."""
-    member = payload.get("member", {})
-    return {
-        "action": payload.get("action"),
-        "member_login": member.get("login"),
-    }
-
-
-def _extract_public(payload: dict[str, Any]) -> dict[str, Any]:
-    """PublicEvent 페이로드 추출."""
-    return {}
-
-
-def _extract_gollum(payload: dict[str, Any]) -> dict[str, Any]:
-    """GollumEvent 페이로드 추출."""
-    pages = payload.get("pages", [])
-    return {
-        "pages": [
-            {
-                "action": page.get("action"),
-                "title": page.get("title"),
-            }
-            for page in pages
-        ],
-    }
-
-
-def _extract_fallback(payload: dict[str, Any]) -> dict[str, Any]:
-    """알려지지 않은 이벤트 타입에 대한 fallback 추출.
-
-    - top-level 키만 추출
-    - 문자열은 200자로 제한
-    - 중첩된 객체는 타입 표시만
-    """
-    result: dict[str, Any] = {}
-    for key, value in payload.items():
-        if isinstance(value, str):
-            result[key] = value[:200]
-        elif isinstance(value, (int, float, bool, type(None))):
-            result[key] = value
-        elif isinstance(value, dict):
-            result[key] = "<dict>"
-        elif isinstance(value, list):
-            result[key] = f"<list[{len(value)}]>"
-        else:
-            result[key] = f"<{type(value).__name__}>"
-    return result
-
-
-# Payload extractor dispatch table
-_PAYLOAD_EXTRACTORS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-    "PushEvent": _extract_push,
-    "PullRequestEvent": _extract_pull_request,
-    "IssuesEvent": _extract_issues,
-    "IssueCommentEvent": _extract_issue_comment,
-    "WatchEvent": _extract_watch,
-    "ForkEvent": _extract_fork,
-    "CreateEvent": _extract_create,
-    "DeleteEvent": _extract_delete,
-    "ReleaseEvent": _extract_release,
-    "PullRequestReviewEvent": _extract_pull_request_review,
-    "PullRequestReviewCommentEvent": _extract_pull_request_review_comment,
-    "MemberEvent": _extract_member,
-    "PublicEvent": _extract_public,
-    "GollumEvent": _extract_gollum,
-}
-
-
-def normalize_payload(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """이벤트 타입에 따라 페이로드를 정규화한다."""
-    extractor = _PAYLOAD_EXTRACTORS.get(event_type)
-    if extractor:
-        return extractor(payload)
-    return _extract_fallback(payload)
-
-
-def to_event_row(event: GitHubEvent, batch_date: str) -> EventRow:
-    """GitHubEvent를 EventRow로 변환한다."""
-    normalized = normalize_payload(event.type, event.payload)
-    return EventRow(
-        id=event.id,
-        type=event.type,
-        actor_login=event.actor.login,
-        repo_name=event.repo.name,
-        org_name=event.org.login if event.org else None,
-        payload=json.dumps(normalized, ensure_ascii=False),
-        created_at=event.created_at.isoformat(),
-        batch_date=batch_date,
-    )
-
-
-def deduplicate(rows: list[EventRow]) -> tuple[list[EventRow], int]:
-    """중복된 이벤트 ID를 제거한다."""
-    seen: set[str] = set()
-    unique: list[EventRow] = []
-    duplicates = 0
-
-    for row in rows:
-        if row["id"] in seen:
-            duplicates += 1
-            continue
-        seen.add(row["id"])
-        unique.append(row)
-
-    return unique, duplicates
-
-
-# Validation regex patterns
-_CREATED_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
-_BATCH_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-def validate_row(row: EventRow) -> tuple[bool, str | None]:
-    """EventRow의 유효성을 검증한다.
-
-    Returns:
-        (valid, error_message) 튜플
-    """
-    # id 검증
-    if not row["id"]:
-        return False, "id is empty"
-
-    # type 검증
-    if not row["type"]:
-        return False, "type is empty"
-
-    # actor_login 검증
-    if not row["actor_login"]:
-        return False, "actor_login is empty"
-
-    # repo_name 검증
-    if not row["repo_name"]:
+def validate_dl_row(row: dict[str, Any], table_name: str) -> tuple[bool, str | None]:
+    """DL Row 공통 필수 필드 검증."""
+    if not row.get("event_id"):
+        return False, "event_id is empty"
+    if not row.get("user_login"):
+        return False, "user_login is empty"
+    if not row.get("repo_name"):
         return False, "repo_name is empty"
-
-    # payload JSON 검증
-    try:
-        json.loads(row["payload"])
-    except (json.JSONDecodeError, TypeError) as e:
-        return False, f"payload is not valid JSON: {e}"
-
-    # created_at 형식 검증
-    if not _CREATED_AT_RE.match(row["created_at"]):
-        return False, f"created_at format invalid: {row['created_at']}"
-
-    # batch_date 형식 검증
-    if not _BATCH_DATE_RE.match(row["batch_date"]):
-        return False, f"batch_date format invalid: {row['batch_date']}"
-
+    if not _TS_KST_RE.match(row.get("ts_kst", "")):
+        return False, f"ts_kst format invalid: {row.get('ts_kst')}"
+    if not _BASE_DATE_RE.match(row.get("base_date", "")):
+        return False, f"base_date format invalid: {row.get('base_date')}"
     return True, None
 
 
+# ── 메인 변환 파이프라인 ─────────────────────────────────────
+
 def transform_events(
     events: list[GitHubEvent],
-    batch_date: str,
-) -> tuple[list[EventRow], TransformStats]:
-    """GitHubEvent 리스트를 EventRow 리스트로 변환한다.
+) -> tuple[DLRowsByTable, TransformStats]:
+    """GitHubEvent 리스트를 타입별 DL Row 딕셔너리로 변환한다.
 
-    Pipeline:
-    1. 입력 카운트
-    2. 타입별 통계 수집
-    3. to_event_row() 변환 + validate_row() 검증
-    4. deduplicate() 중복 제거
-    5. 출력 타입별 통계 수집
-    6. 로그 출력
+    Returns:
+        (DLRowsByTable, TransformStats) 튜플.
+        DLRowsByTable = dict[테이블명, list[dict]].
     """
     stats = TransformStats()
     stats.total_input = len(events)
+    result: DLRowsByTable = {}
 
-    # 입력 타입별 카운트
     for event in events:
         stats.input_type_counts[event.type] = stats.input_type_counts.get(event.type, 0) + 1
 
-    # 변환 + 검증
-    valid_rows: list[EventRow] = []
-    for event in events:
+        table_name = EVENT_TYPE_TO_TABLE.get(event.type)
+        if table_name is None:
+            stats.skipped += 1
+            logger.warning(
+                "Unknown event type skipped: %s (event_id=%s)", event.type, event.id
+            )
+            continue
+
         try:
-            row = to_event_row(event, batch_date)
-            is_valid, error = validate_row(row)
-
-            if not is_valid:
-                stats.validation_errors += 1
-                error_msg = f"Validation failed for event {row['id']}: {error}"
-                stats.error_details.append(error_msg)
-                logger.warning(error_msg)
-                continue
-
-            valid_rows.append(row)
-
+            rows = _CONVERTERS[event.type](event)
         except Exception as e:
             stats.validation_errors += 1
-            error_msg = f"Transform failed for event {event.id}: {e}"
+            error_msg = f"Transform failed for event {event.id} ({event.type}): {e}"
             stats.error_details.append(error_msg)
             logger.error(error_msg)
             continue
 
-    # 중복 제거
-    unique_rows, duplicates = deduplicate(valid_rows)
-    stats.duplicates_removed = duplicates
+        # 행 단위 검증
+        for row in rows:
+            is_valid, error = validate_dl_row(row, table_name)
+            if not is_valid:
+                stats.validation_errors += 1
+                error_msg = f"Validation failed for event {row.get('event_id')}: {error}"
+                stats.error_details.append(error_msg)
+                logger.warning(error_msg)
+                continue
+            result.setdefault(table_name, []).append(row)
 
-    # 출력 타입별 카운트
-    for row in unique_rows:
-        stats.output_type_counts[row["type"]] = stats.output_type_counts.get(row["type"], 0) + 1
+    # 출력 통계
+    total_output = 0
+    for table_name, rows in result.items():
+        stats.output_table_counts[table_name] = len(rows)
+        total_output += len(rows)
+    stats.total_output = total_output
 
-    stats.total_output = len(unique_rows)
-
-    # 로그 출력
     logger.info(
-        "Transform complete: input=%d, output=%d, duplicates=%d, errors=%d",
+        "Transform complete: input=%d, output_rows=%d, tables=%d, skipped=%d, errors=%d",
         stats.total_input,
         stats.total_output,
-        stats.duplicates_removed,
+        len(result),
+        stats.skipped,
         stats.validation_errors,
     )
 
-    return unique_rows, stats
+    return result, stats
 
+
+# ── 일별 통계 ────────────────────────────────────────────────
 
 class DailyStatsRow(TypedDict):
     """D1 daily_stats 테이블 행 타입."""
@@ -392,12 +517,28 @@ class DailyStatsRow(TypedDict):
     count: int
 
 
-def compute_daily_stats(rows: list[EventRow]) -> list[DailyStatsRow]:
-    """EventRow 리스트에서 일별 통계를 집계한다."""
+def compute_daily_stats(rows_by_table: DLRowsByTable) -> list[DailyStatsRow]:
+    """DLRowsByTable에서 일별 통계를 집계한다.
+
+    push/gollum은 커밋/페이지 펼침이므로 event_id 기준 distinct count.
+    나머지 테이블도 event_id(PK) 기준으로 deduplicate 하여,
+    D1 INSERT OR IGNORE 동작과 일치하는 count를 보장한다.
+    """
     counter: dict[tuple[str, str, str, str], int] = {}
-    for row in rows:
-        key = (row["batch_date"], row["org_name"] or "", row["repo_name"], row["type"])
-        counter[key] = counter.get(key, 0) + 1
+
+    for table_name, rows in rows_by_table.items():
+        event_type = TABLE_TO_EVENT_TYPE.get(table_name, table_name)
+
+        seen_event_ids: set[str] = set()
+        for row in rows:
+            eid = row["event_id"]
+            if eid in seen_event_ids:
+                continue
+            seen_event_ids.add(eid)
+
+            key = (row["base_date"], row["organization"] or "", row["repo_name"], event_type)
+            counter[key] = counter.get(key, 0) + 1
+
     return [
         DailyStatsRow(date=k[0], org_name=k[1], repo_name=k[2], event_type=k[3], count=v)
         for k, v in sorted(counter.items())

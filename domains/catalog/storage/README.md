@@ -10,8 +10,6 @@ domains/catalog/storage/
 ├── migrations/
 │   ├── 0001_catalog_core.sql  # 코어 테이블 생성 (DDL)
 │   └── 0002_catalog_indexes.sql # 쿼리 성능 인덱스
-├── seeds/
-│   └── 0001_seed_catalog.sql  # 테스트용 샘플 데이터
 └── README.md
 ```
 
@@ -27,7 +25,7 @@ domains/catalog/storage/
 ## 운영 정책
 
 - **스키마 변경은 반드시 `wrangler d1 migrations create` + `migrations apply`를 사용**합니다.
-- `wrangler d1 execute --file`은 시드 데이터 삽입 등 비-마이그레이션 작업에만 사용합니다.
+- `wrangler d1 execute --file`은 비-마이그레이션 작업에만 사용합니다.
 - 마이그레이션 이력은 `d1_migrations` 테이블에서 자동 추적됩니다.
 
 ## 마이그레이션 적용
@@ -38,11 +36,6 @@ domains/catalog/storage/
 # 테이블 생성
 npx wrangler d1 migrations apply pseudolab-main --local \
   --config domains/catalog/storage/wrangler.toml
-
-# 시드 데이터 삽입
-npx wrangler d1 execute pseudolab-main --local \
-  --config domains/catalog/storage/wrangler.toml \
-  --file domains/catalog/storage/seeds/0001_seed_catalog.sql
 ```
 
 ### 리모트 (프로덕션)
@@ -51,11 +44,6 @@ npx wrangler d1 execute pseudolab-main --local \
 # 테이블 생성
 npx wrangler d1 migrations apply pseudolab-main --remote \
   --config domains/catalog/storage/wrangler.toml
-
-# 시드 데이터 삽입
-npx wrangler d1 execute pseudolab-main --remote \
-  --config domains/catalog/storage/wrangler.toml \
-  --file domains/catalog/storage/seeds/0001_seed_catalog.sql
 ```
 
 ## 검증 쿼리

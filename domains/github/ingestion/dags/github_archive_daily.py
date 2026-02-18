@@ -3,19 +3,19 @@
 매일 UTC 02:00에 전날의 GitHub Archive 데이터를 수집, 검증, 업로드한다.
 
 Task 흐름:
-  fetch → validate → [upload_r2, upload_d1] (병렬) → cleanup
+  fetch → validate → [upload_r2, upload_d1]
+  upload_d1 → verify_aggregation → quality_check → daily_summary → cleanup
+  upload_r2 → cleanup
 """
 
 from __future__ import annotations
 
-import json
 import os
-import urllib.request
 from pathlib import Path
 
 import pendulum
+from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import dag, task
-from airflow.operators.bash import BashOperator
 
 
 # ─── 상수 ───────────────────────────────────────────────
@@ -23,36 +23,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent  # domains/github/ingestio
 DATA_DIR = PROJECT_ROOT / "data"
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
+# ─── Slack 실패 알림 (Airflow 3.0+ Notifier 패턴) ──────
+_slack_url = os.environ.get("SLACK_WEBHOOK_URL", "")
 
-# ─── 알림 콜백 ──────────────────────────────────────────
+try:
+    from gharchive_etl.notify import SlackWebhookNotifier
 
-def _send_slack_alert(context: dict) -> None:
-    """Task 실패 시 Slack Webhook으로 알림 전송."""
-    webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "")
-    if not webhook_url:
-        return
-
-    task_instance = context.get("task_instance")
-    dag_run = context.get("dag_run")
-    exception = context.get("exception")
-
-    message = {
-        "text": (
-            f":x: *Airflow Task 실패*\n"
-            f"• DAG: `{task_instance.dag_id}`\n"
-            f"• Task: `{task_instance.task_id}`\n"
-            f"• 실행 날짜: `{dag_run.logical_date}`\n"
-            f"• 에러: `{exception}`\n"
-            f"• <{task_instance.log_url}|로그 보기>"
-        ),
-    }
-
-    req = urllib.request.Request(
-        webhook_url,
-        data=json.dumps(message).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    urllib.request.urlopen(req, timeout=10)
+    _failure_notifier = SlackWebhookNotifier(webhook_url=_slack_url) if _slack_url else None
+except ImportError:
+    _failure_notifier = None
 
 
 # ─── DAG 정의 ───────────────────────────────────────────
@@ -61,7 +40,7 @@ DEFAULT_ARGS = {
     "owner": "pseudolab",
     "retries": 2,
     "retry_delay": pendulum.duration(minutes=5),
-    "on_failure_callback": _send_slack_alert,
+    **({"on_failure_callback": _failure_notifier} if _failure_notifier else {}),
 }
 
 
@@ -145,7 +124,56 @@ def github_archive_daily():
         ),
     )
 
-    # ── Task 5: cleanup (임시 파일 정리) ──
+    # ── Task 5: verify_aggregation (집계 정합성 검증) ──
+    verify_aggregation = BashOperator(
+        task_id="verify_aggregation",
+        bash_command=(
+            "gharchive-etl verify-aggregation "
+            "--date {{ data_interval_start | ds }} "
+            f"--config {CONFIG_PATH} "
+            "--json-log"
+        ),
+    )
+
+    # ── Task 6: quality_check (데이터 품질 검증) ──
+    quality_check = BashOperator(
+        task_id="quality_check",
+        bash_command=(
+            "gharchive-etl quality-check "
+            "--date {{ data_interval_start | ds }} "
+            f"--config {CONFIG_PATH} "
+            "--json-log"
+        ),
+    )
+
+    # ── Task 7: daily_summary (일일 실행 요약 Slack 전송) ──
+    @task(trigger_rule="none_failed_min_one_success")
+    def daily_summary(**context) -> None:
+        """일일 실행 요약을 Slack으로 전송."""
+        from gharchive_etl.notify import build_daily_summary, send_slack_webhook
+
+        ds = context["data_interval_start"].strftime("%Y-%m-%d")
+        webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+        if not webhook_url:
+            print(f"[daily_summary] SLACK_WEBHOOK_URL 미설정 — 요약 스킵")
+            return
+
+        # JSONL 파일에서 실제 이벤트 수 계산
+        jsonl_path = DATA_DIR / f"{ds}.jsonl"
+        events_count = 0
+        if jsonl_path.exists():
+            events_count = sum(1 for line in open(jsonl_path, "rb") if line.strip())
+
+        summary = build_daily_summary(
+            batch_date=ds,
+            events_count=events_count,
+            upload_success=True,
+            quality_passed=True,
+        )
+        send_slack_webhook(summary, webhook_url)
+        print(f"[daily_summary] {ds}: Slack 요약 전송 완료 ({events_count} events)")
+
+    # ── Task 8: cleanup (임시 파일 정리) ──
     @task(trigger_rule="none_failed_min_one_success")
     def cleanup(**context) -> None:
         """JSONL 임시 파일 삭제.
@@ -163,7 +191,15 @@ def github_archive_daily():
             print(f"[cleanup] 파일 없음 (이미 삭제됨): {jsonl_path}")
 
     # ── 의존성 그래프 ──
-    fetch >> validate_result >> [upload_r2, upload_d1] >> cleanup()
+    # fetch → validate → [upload_r2, upload_d1]
+    # upload_d1 → verify_aggregation → quality_check → daily_summary → cleanup
+    # upload_r2 → cleanup
+    summary_task = daily_summary()
+    cleanup_task = cleanup()
+
+    fetch >> validate_result >> [upload_r2, upload_d1]
+    upload_d1 >> verify_aggregation >> quality_check >> summary_task >> cleanup_task
+    upload_r2 >> cleanup_task
 
 
 # DAG 인스턴스 생성

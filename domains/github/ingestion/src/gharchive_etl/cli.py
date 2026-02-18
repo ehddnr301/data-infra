@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from dataclasses import asdict
 from datetime import date as date_type
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -15,12 +16,17 @@ import click
 import orjson
 
 from gharchive_etl.config import load_config
-from gharchive_etl.d1 import _validate_d1_auth, insert_daily_stats, insert_events
+from gharchive_etl.d1 import (
+    _validate_d1_auth,
+    compute_daily_stats_from_dl,
+    insert_all_dl_rows,
+    insert_daily_stats,
+)
 from gharchive_etl.downloader import HourStats, process_hour
 from gharchive_etl.logging_config import setup_logging
 from gharchive_etl.models import GitHubEvent
 from gharchive_etl.r2 import _check_wrangler_installed, upload_events_to_r2
-from gharchive_etl.transformer import compute_daily_stats, transform_events
+from gharchive_etl.transformer import transform_events
 
 logger = logging.getLogger(__name__)
 
@@ -379,17 +385,34 @@ def upload(
         # D1 적재
         if target in ("d1", "all"):
             click.echo(f"  [D1] transforming {len(events)} events...")
-            rows, _transform_stats = transform_events(events, date_str)
+            dl_rows, _transform_stats = transform_events(events)
 
-            click.echo(f"  [D1] inserting {len(rows)} event rows...")
-            events_result = insert_events(rows, config.d1, dry_run=dry_run)
+            total_dl_rows = sum(len(rows) for rows in dl_rows.values())
+            click.echo(f"  [D1] inserting {total_dl_rows} rows into {len(dl_rows)} DL tables...")
+            dl_results = insert_all_dl_rows(dl_rows, config.d1, dry_run=dry_run)
+            total_inserted = sum(r.rows_inserted for r in dl_results.values())
+            total_errors = sum(len(r.errors) for r in dl_results.values())
+            total_skipped = sum(r.rows_skipped for r in dl_results.values())
             click.echo(
-                f"  [D1] events inserted={events_result.rows_inserted}, "
-                f"errors={len(events_result.errors)}"
+                f"  [D1] DL tables: {len(dl_results)} tables, "
+                f"inserted={total_inserted}, skipped={total_skipped}, errors={total_errors}"
             )
-            total_upload_errors.extend(events_result.errors)
+            for r in dl_results.values():
+                total_upload_errors.extend(r.errors)
 
-            daily = compute_daily_stats(rows)
+            # DL 적재 결과가 불완전하면 daily_stats를 갱신하지 않는다.
+            # (events vs daily_stats 불일치 방지)
+            if total_errors > 0 or total_skipped > 0:
+                skip_reason = (
+                    f"[D1] skip daily stats for {date_str}: "
+                    f"dl_errors={total_errors}, dl_skipped={total_skipped}"
+                )
+                click.echo(f"  {skip_reason}", err=True)
+                logger.error(skip_reason)
+                total_upload_errors.append(skip_reason)
+                continue
+
+            daily = compute_daily_stats_from_dl(date_str, config.d1)
             click.echo(f"  [D1] upserting {len(daily)} daily stats...")
             stats_result = insert_daily_stats(daily, config.d1, dry_run=dry_run)
             click.echo(
@@ -417,6 +440,151 @@ def upload(
     if total_upload_errors:
         click.echo(f"ERROR: {len(total_upload_errors)} upload error(s) occurred", err=True)
         raise SystemExit(1)
+
+
+@main.command()
+@click.option("--date", "single_date", required=True, help="검증 대상 날짜 (YYYY-MM-DD)")
+@click.option(
+    "--config",
+    "config_path",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="설정 파일 경로 (기본: 패키지 내부 config.yaml)",
+)
+@click.option("--json-log/--no-json-log", default=True, help="JSON 로그 포맷 (기본: 활성)")
+def verify_aggregation(
+    single_date: str,
+    config_path: Path | None,
+    json_log: bool,
+) -> None:
+    """events와 daily_stats 집계 정합성을 검증합니다."""
+    from gharchive_etl.quality import check_daily_stats_consistency
+
+    setup_logging(json_format=json_log)
+
+    date = _parse_date(single_date)
+    config = load_config(config_path)
+
+    click.echo(f"[verify-aggregation] {date}: 집계 정합성 검증 시작...")
+    date_str = date.strftime("%Y-%m-%d")
+    result = check_daily_stats_consistency(date_str, config.d1)
+
+    # 결과 출력
+    click.echo(orjson.dumps(asdict(result), option=orjson.OPT_INDENT_2).decode())
+
+    if result.passed:
+        click.echo(f"[verify-aggregation] {date}: PASSED")
+    else:
+        click.echo(f"[verify-aggregation] {date}: FAILED", err=True)
+        raise SystemExit(1)
+
+
+@main.command()
+@click.option("--date", "single_date", required=True, help="검증 대상 날짜 (YYYY-MM-DD)")
+@click.option(
+    "--report-json",
+    default=None,
+    type=click.Path(path_type=Path),
+    help="품질 리포트 JSON 파일 출력 경로",
+)
+@click.option(
+    "--config",
+    "config_path",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="설정 파일 경로 (기본: 패키지 내부 config.yaml)",
+)
+@click.option("--json-log/--no-json-log", default=True, help="JSON 로그 포맷 (기본: 활성)")
+def quality_check(
+    single_date: str,
+    report_json: Path | None,
+    config_path: Path | None,
+    json_log: bool,
+) -> None:
+    """데이터 품질 검증을 실행합니다 (DQ001~DQ006)."""
+    from gharchive_etl.quality import run_quality_checks
+
+    setup_logging(json_format=json_log)
+
+    date = _parse_date(single_date)
+    config = load_config(config_path)
+
+    click.echo(f"[quality-check] {date}: 데이터 품질 검증 시작...")
+    date_str = date.strftime("%Y-%m-%d")
+    report = run_quality_checks(date_str, config)
+
+    # JSON 리포트 출력
+    report_bytes = orjson.dumps(asdict(report), option=orjson.OPT_INDENT_2)
+
+    if report_json:
+        report_json.parent.mkdir(parents=True, exist_ok=True)
+        report_json.write_bytes(report_bytes)
+        click.echo(f"[quality-check] 리포트 저장: {report_json}")
+
+    # 요약 출력
+    click.echo(report_bytes.decode())
+
+    if report.passed:
+        click.echo(f"[quality-check] {date}: PASSED ({len(report.results)} rules)")
+    else:
+        failed_rules = [r.rule_id for r in report.results if not r.passed]
+        click.echo(
+            f"[quality-check] {date}: FAILED (failed rules: {', '.join(failed_rules)})",
+            err=True,
+        )
+        raise SystemExit(1)
+
+
+@main.command()
+@click.option("--threshold", default=0.8, type=float, help="사용량 임계치 (0.0~1.0, 기본: 0.8)")
+@click.option("--json-log/--no-json-log", default=True, help="JSON 로그 포맷 (기본: 활성)")
+def check_usage(
+    threshold: float,
+    json_log: bool,
+) -> None:
+    """Cloudflare Workers/D1/R2 사용량을 확인하고 Slack으로 리포트를 전송합니다."""
+    import os
+
+    from gharchive_etl.cloudflare_usage import check_and_alert_usage
+
+    setup_logging(json_format=json_log)
+
+    account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+    api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+    webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "")
+
+    if not account_id or not api_token:
+        click.echo("ERROR: CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are required", err=True)
+        raise SystemExit(1)
+
+    if not webhook_url:
+        logger.warning("SLACK_WEBHOOK_URL not set — report will not be sent to Slack")
+
+    metrics = check_and_alert_usage(
+        account_id=account_id,
+        api_token=api_token,
+        webhook_url=webhook_url or None,
+        threshold=threshold,
+    )
+
+    if not metrics:
+        click.echo("ERROR: Failed to collect any metrics", err=True)
+        raise SystemExit(1)
+
+    from gharchive_etl.cloudflare_usage import format_bytes
+
+    current_group = ""
+    for m in metrics:
+        if m.group and m.group != current_group:
+            current_group = m.group
+            click.echo(f"  [{current_group}]")
+        if m.unit == "bytes":
+            val = f"{format_bytes(m.current)} / {format_bytes(m.limit)}"
+        else:
+            val = f"{m.current:,} / {m.limit:,}"
+        click.echo(f"    {m.service}: {val} ({m.usage_rate:.1%})")
+
+    click.echo(f"[check-usage] {len(metrics)} metrics checked (threshold: {threshold:.0%})")
 
 
 if __name__ == "__main__":

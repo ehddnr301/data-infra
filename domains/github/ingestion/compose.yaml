@@ -14,6 +14,7 @@ services:
     ports:
       - "30022:8080"
     volumes:
+      - airflow-db:/opt/airflow/db          # 메타DB 영속화
       - ./dags:/opt/airflow/dags
       - ./data:/opt/airflow/data
       - ./config.yaml:/opt/airflow/config.yaml:ro
@@ -22,5 +23,14 @@ services:
     environment:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "sqlite:////opt/airflow/db/airflow.db"
+      # 스케줄러 튜닝: queued 체류 시간 단축
+      AIRFLOW__SCHEDULER__SCHEDULER_HEARTBEAT_SEC: "5"
+      AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "10"
+      AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
+      AIRFLOW__SCHEDULER__SCHEDULING_DELAY: "0"
     command: standalone
     restart: unless-stopped
+
+volumes:
+  airflow-db:

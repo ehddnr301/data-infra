@@ -13,6 +13,11 @@ import pytest
 
 DAG_DIR = Path(__file__).resolve().parent.parent / "dags"
 
+pytestmark = pytest.mark.skipif(
+    not importlib.util.find_spec("airflow"),
+    reason="Airflow not installed",
+)
+
 
 class TestDagIntegrity:
     """DAG 파일 유효성 테스트."""
@@ -54,7 +59,10 @@ class TestDagIntegrity:
         dag = dagbag.dags["github_archive_daily"]
         task_ids = {t.task_id for t in dag.tasks}
 
-        expected_tasks = {"fetch", "validate", "upload_r2", "upload_d1", "cleanup"}
+        expected_tasks = {
+            "fetch", "validate", "upload_r2", "upload_d1",
+            "verify_aggregation", "quality_check", "daily_summary", "cleanup",
+        }
         assert expected_tasks.issubset(task_ids), (
             f"누락 Task: {expected_tasks - task_ids}"
         )
@@ -85,8 +93,73 @@ class TestDagIntegrity:
         assert "validate" in [t.task_id for t in upload_r2.upstream_list]
         assert "validate" in [t.task_id for t in upload_d1.upstream_list]
 
-        # upload_r2, upload_d1 → cleanup
+        # upload_r2 → cleanup
         cleanup_task = dag.get_task("cleanup")
         cleanup_upstream_ids = {t.task_id for t in cleanup_task.upstream_list}
         assert "upload_r2" in cleanup_upstream_ids
-        assert "upload_d1" in cleanup_upstream_ids
+
+    def test_cloudflare_usage_hourly_dag_imports(self):
+        """cloudflare_usage_hourly DAG 파일이 import 에러 없이 로딩된다."""
+        dag_file = DAG_DIR / "cloudflare_usage_hourly.py"
+        assert dag_file.exists(), f"DAG 파일 없음: {dag_file}"
+
+        spec = importlib.util.spec_from_file_location("cloudflare_usage_hourly", dag_file)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+    def test_cloudflare_usage_hourly_dag_exists(self):
+        """cloudflare_usage_hourly DAG이 DagBag에 존재한다."""
+        from airflow.models import DagBag
+
+        dagbag = DagBag(dag_folder=str(DAG_DIR), include_examples=False)
+        assert "cloudflare_usage_hourly" in dagbag.dags, (
+            f"DAG 없음. import errors: {dagbag.import_errors}"
+        )
+
+    def test_cloudflare_usage_hourly_schedule(self):
+        """cloudflare_usage_hourly 스케줄이 '0 * * * *', catchup=False."""
+        from airflow.models import DagBag
+
+        dagbag = DagBag(dag_folder=str(DAG_DIR), include_examples=False)
+        dag = dagbag.dags["cloudflare_usage_hourly"]
+
+        assert str(dag.schedule_interval) == "0 * * * *", (
+            f"스케줄 불일치: {dag.schedule_interval}"
+        )
+        assert dag.catchup is False, "catchup이 True로 변경됨"
+        assert dag.max_active_runs == 1, (
+            f"max_active_runs 불일치: {dag.max_active_runs}"
+        )
+
+    def test_cloudflare_usage_hourly_has_check_usage_task(self):
+        """cloudflare_usage_hourly에 check_usage task가 존재한다."""
+        from airflow.models import DagBag
+
+        dagbag = DagBag(dag_folder=str(DAG_DIR), include_examples=False)
+        dag = dagbag.dags["cloudflare_usage_hourly"]
+        task_ids = {t.task_id for t in dag.tasks}
+
+        assert "check_usage" in task_ids, f"check_usage 태스크 없음. 존재 태스크: {task_ids}"
+
+    def test_verify_quality_dependencies(self):
+        """upload_d1 → verify_aggregation → quality_check → daily_summary → cleanup 의존성."""
+        from airflow.models import DagBag
+
+        dagbag = DagBag(dag_folder=str(DAG_DIR), include_examples=False)
+        dag = dagbag.dags["github_archive_daily"]
+
+        # upload_d1 → verify_aggregation
+        verify = dag.get_task("verify_aggregation")
+        assert "upload_d1" in [t.task_id for t in verify.upstream_list]
+
+        # verify_aggregation → quality_check
+        quality = dag.get_task("quality_check")
+        assert "verify_aggregation" in [t.task_id for t in quality.upstream_list]
+
+        # quality_check → daily_summary
+        summary = dag.get_task("daily_summary")
+        assert "quality_check" in [t.task_id for t in summary.upstream_list]
+
+        # daily_summary → cleanup
+        cleanup = dag.get_task("cleanup")
+        assert "daily_summary" in [t.task_id for t in cleanup.upstream_list]

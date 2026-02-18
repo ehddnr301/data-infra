@@ -1,434 +1,335 @@
-# Pseudolab Cloudflare 운영 인수인계 (ops.md)
+# 운영 가이드
 
-## Summary
+> 기준일: 2026-02-18 | 상세 기술 레퍼런스: [`ops-reference.md`](ops-reference.md)
 
-- 기준일: `2026-02-16`
-- 현재 상태: 인프라(Terraform) + D1 스키마 + 공용 타입 + API/Hono 골격 + Web/React 골격 + GitHub ETL `fetch` + `filter` + `transformer` + `upload`(R2/D1) 구현 완료
-- 운영 가능 범위:
-  - API 기본 헬스체크/라우팅(`/api/health`, `/api/github/*`, `/api/catalog/*`)
-  - Web 기본 라우팅/빌드/테스트(`apps/web`)
-  - GitHub ETL 시간별 스트리밍 수집(`gharchive-etl fetch`)
-  - GitHub ETL 이벤트 필터링(`filter_events`) + 가공/변환(`transformer`)
-  - GitHub ETL R2 업로드(`upload --target r2`) + D1 적재(`upload --target d1`)
-- 미구현 핵심:
-  - `fetch → upload` 자동 연결 파이프라인 (현재 수동 `--input-dir` 지정)
-  - Catalog API의 실제 DB 조회/상세/컬럼 반환 로직
-- 운영자가 먼저 할 일:
-  1. `pnpm install && pnpm build && pnpm check`
-  2. `pnpm --filter @pseudolab/api dev` 후 `/api/health` 확인
-  3. `pnpm --filter @pseudolab/web dev` 후 `/`, `/datasets` 동작 확인
-  4. `uv run gharchive-etl fetch --date 2024-01-15 --start-hour 0 --end-hour 0 --no-json-log` 스모크 실행
-  5. `uv run gharchive-etl upload --date 2024-01-15 --input-dir /tmp/data --target all --dry-run --no-json-log` 업로드 dry-run 확인
-  6. 인프라 변경 시 `infra/`에서 `terraform plan/apply/output` 재검증
+## 프로젝트 개요
 
-아래부터는 영역별 상세 운영 절차입니다.
+GitHub Archive 데이터를 수집·가공하여 Cloudflare 인프라 위에서 제공하는 데이터 카탈로그 플랫폼.
 
-## 1) 현재 상황 요약 (기준일: 2026-02-16)
-
-현재 `ticket-system/ticket-done/` 기준으로 완료된 범위는 아래와 같습니다.
-
-- 완료
-  - 모노레포/워크스페이스 기본 구성 (`pnpm`, `turbo`, `uv`)
-  - Cloudflare 리소스 Terraform 프로비저닝 (R2/D1/KV)
-  - `apps/api/wrangler.toml` 바인딩 연결
-  - D1 카탈로그 스키마/인덱스/시드 및 마이그레이션 체계
-  - 공유 TypeScript 타입 패키지 (`@pseudolab/shared-types`) 확장
-  - GitHub ingestion Python 프로젝트 골격 + 테스트
-  - GitHub ETL `fetch` 구현 (시간별 스트리밍 다운로드/필터링/JSONL 출력/재시도/요약 로그)
-  - GitHub ETL `filter` + `transformer` 구현 (이벤트 필터링 + 14종 페이로드 정규화/변환/검증/중복제거)
-  - GitHub ETL `upload` 구현 (R2 Wrangler CLI 업로드 + D1 HTTP API 적재 + daily_stats UPSERT)
-  - Hono API 보일러플레이트 (`/api/health`, `/api/github/*`, `/api/catalog/*`)
-  - RFC 7807 에러 응답 규격 적용 (`ProblemDetail`)
-  - React + Vite 웹앱 부트스트랩 (`apps/web`) + 기본 라우팅/레이아웃/테스트
-
-- 아직 미구현(운영 주의)
-  - `fetch → upload` 자동 연결 파이프라인 (현재 수동 `--input-dir` 지정)
-  - 카탈로그 API의 실제 DB 조회/상세/컬럼 반환 로직은 스텁 상태
-
-즉, **인프라 + DB 스키마 + 타입 + GitHub ETL fetch/filter/transformer/upload까지 동작 가능한 상태**이며,
-**API/Web는 골격과 계약이 준비되었고, fetch→upload 자동 연결/카탈로그 조회 계층은 후속 티켓에서 구현 필요**합니다.
-
----
-
-## 2) 운영 대상 리소스
-
-아래 ID 값은 **2026-02-16 기준 스냅샷**입니다.
-최신값은 반드시 `infra/`에서 `terraform output`으로 재확인하세요.
-
-- R2 Bucket: `github-archive-raw`
-- D1 Database: `pseudolab-main`
-  - DB ID: `e7f4cab0-3293-4942-988f-38d9e97e14b2`
-- KV Namespace (prod): `pseudolab-cache`
-  - ID: `9b50454f6eb6483cba84a41fbec19ce9`
-- KV Namespace (preview): `pseudolab-cache-preview`
-  - ID: `397782aa9e304aa3bf3a741fbc55fd87`
-
----
-
-## 3) 신규 운영자 첫 점검 순서
-
-모든 명령은 저장소 루트(`/home/dwlee/pseudolab-cloudflare`) 기준입니다.
-
-### 3-1. 공통 개발환경/정적 점검
-
-```bash
-pnpm install
-pnpm build
-pnpm check
-uv sync
-uv run ruff check domains/
-uv run ruff format --check domains/
-uv run pytest
+```
+gharchive.org → Python ETL (fetch/filter/transform) → R2(raw) + D1(14개 DL 테이블)
+                                                        → Hono API → React 스키마 브라우저
 ```
 
-확인 포인트:
-- `pnpm build`, `pnpm check`, `ruff`, `pytest`가 실패 없이 끝나는지 확인
+현재 동작하는 것:
+- GitHub ETL: 시간별 수집 → 14종 이벤트 타입별 DL 테이블 적재 → daily_stats 집계
+- Airflow DAG: 매일 자동 수집/적재/정리 파이프라인
+- Catalog API: 데이터셋/컬럼 메타데이터 조회
+- Web UI: 데이터셋 검색/필터/상세 스키마 브라우저
 
-### 3-2. Cloudflare 인증 확인
+---
+
+## 1. 개발 환경 (로컬)
+
+### 1-1. 처음 셋업
+
+```bash
+# TypeScript 패키지 (API, Web, shared-types)
+pnpm install
+
+# Python 패키지 (GitHub ETL)
+uv sync
+```
+
+### 1-2. 전체 빌드·테스트 확인
+
+```bash
+# TypeScript 빌드 + 타입체크
+pnpm build && pnpm check
+
+# Python 린트 + 테스트
+uv run ruff check domains/ && uv run ruff format --check domains/
+uv run pytest domains/github/ingestion/tests/
+```
+
+**예상 결과**:
+- `pnpm build`: 에러 없이 완료
+- `pnpm check`: `tsc --noEmit` 에러 0건
+- `ruff`: 린트/포매팅 위반 0건
+- `pytest`: **220 passed, 7 skipped** (Airflow 6 + Slack 1 — 의존성 미설치로 정상 skip)
+
+### 1-3. API 로컬 실행
+
+```bash
+# 로컬 D1 마이그레이션 적용 (최초 1회)
+# ⚠️ 반드시 API의 wrangler.toml 기준으로 적용하세요.
+#    로컬 D1는 wrangler.toml 위치 기준 .wrangler/state/ 에 저장되므로,
+#    다른 config로 적용하면 API가 테이블을 찾지 못합니다.
+npx wrangler d1 migrations apply pseudolab-main --local \
+  --config apps/api/wrangler.toml
+
+# API 서버 시작
+pnpm --filter @pseudolab/api dev
+```
+
+**실행하면 볼 수 있는 것**:
+```bash
+# 헬스체크 — 200 OK + JSON
+curl http://127.0.0.1:8787/api/health
+
+# 데이터셋 목록 — pagination 객체 포함
+curl "http://127.0.0.1:8787/api/catalog/datasets?page=1&pageSize=5"
+
+# 도메인 필터 — github 도메인만 반환
+curl "http://127.0.0.1:8787/api/catalog/datasets?domain=github"
+
+# 없는 데이터셋 — 404 + application/problem+json
+curl -i "http://127.0.0.1:8787/api/catalog/datasets/non-existent"
+```
+
+### 1-4. Web 로컬 실행
+
+```bash
+pnpm --filter @pseudolab/web dev
+# → http://localhost:5173 에서 확인
+```
+
+**실행하면 볼 수 있는 것**:
+
+| URL | 화면 |
+|-----|------|
+| `/` | 메인 페이지 |
+| `/datasets` | 데이터셋 카드 목록, 검색란, 도메인 필터 버튼, 카드/테이블 뷰 토글 |
+| `/datasets/:id` | 메타데이터 그리드 + 컬럼 테이블, 컬럼 클릭 시 사이드 패널 |
+
+> API 서버가 꺼져 있으면 `ErrorCard` + 재시도 버튼이 표시됩니다.
+
+### 1-5. ETL 로컬 실행
+
+```bash
+# 도움말 확인
+uv run gharchive-etl --help
+
+# 데이터 수집 (1시간분, 스모크 테스트)
+uv run gharchive-etl fetch --date 2024-01-15 --start-hour 0 --end-hour 0 --no-json-log
+```
+
+**예상 결과**: `FETCH_SUMMARY` 로그가 출력되고 exit code `0`. 404 시간대는 경고만 남기고 진행.
+
+```bash
+# D1 업로드 dry-run (실제 전송 없이 검증만)
+uv run gharchive-etl upload --date 2024-01-15 --input-dir /tmp/data \
+  --target all --dry-run --config domains/github/ingestion/config.yaml --no-json-log
+```
+
+**예상 결과**: `DRY RUN` 표시와 함께 테이블별 적재 예정 건수 출력. auth/install 사전 검증은 수행.
+
+### 1-6. Airflow 로컬 실행
+
+```bash
+cd domains/github/ingestion
+
+# 환경변수 설정
+cp .env.example .env
+# .env 편집: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, D1_DATABASE_ID 등
+
+# Docker로 실행
+docker compose up -d --build
+```
+
+**실행하면 볼 수 있는 것**:
+- `http://localhost:8080` → Airflow UI
+- `docker compose logs -f` → admin 비밀번호 포함 로그
+- DAG `github_archive_daily`: 매일 UTC 02:00 자동 실행 (fetch → validate → upload_r2 + upload_d1 → cleanup)
+
+```bash
+# 수동 트리거
+docker compose exec airflow airflow dags trigger github_archive_daily
+
+# 종료
+docker compose down
+```
+
+### 1-7. Cloudflare 인증 확인
 
 ```bash
 pnpm wrangler whoami
 ```
 
-확인 포인트:
-- 올바른 Account로 로그인되어 있는지
-- Account ID가 인프라/운영 대상과 일치하는지
+Account ID가 운영 리소스와 일치하는지 확인.
 
 ---
 
-## 4) 인프라 운영 (Terraform)
+## 2. 운영 환경 (프로덕션)
 
-작업 디렉터리: `infra/`
+### 2-1. 운영 리소스
 
-### 4-1. 최초/재초기화
+> 아래 ID는 스냅샷입니다. 최신값: `cd infra && terraform output`
+
+| 리소스 | 이름 | ID |
+|--------|------|----|
+| R2 Bucket | `github-archive-raw` | — |
+| D1 Database | `pseudolab-main` | `e7f4cab0-3293-4942-988f-38d9e97e14b2` |
+| KV (prod) | `pseudolab-cache` | `9b50454f6eb6483cba84a41fbec19ce9` |
+| KV (preview) | `pseudolab-cache-preview` | `397782aa9e304aa3bf3a741fbc55fd87` |
+
+### 2-2. 배포 절차
+
+**순서**: D1 마이그레이션 → API Worker 배포 → Web Pages 배포 (롤백은 역순)
+
+#### 배포 전 체크리스트
 
 ```bash
-cd infra
-cp terraform.tfvars.example terraform.tfvars
-# terraform.tfvars에 cloudflare_api_token, cloudflare_account_id, environment 입력
-terraform init
+pnpm install && pnpm build && pnpm check   # 빌드/타입 통과
+pnpm test                                    # 테스트 통과
+pnpm wrangler whoami                        # 인증 확인
+cd infra && terraform output                # 바인딩 ID 일치 확인
 ```
 
-### 4-2. 변경 검토 및 반영
+#### D1 마이그레이션 (운영)
 
 ```bash
-terraform plan
-terraform apply
-terraform output
-terraform state list
-```
-
-확인 포인트:
-- plan 결과가 의도한 변경인지
-- `terraform output`에 D1/KV ID가 정상 출력되는지
-- `terraform state list`에 4개 리소스가 존재하는지
-
-### 4-3. API 바인딩 드리프트 점검
-
-`apps/api/wrangler.toml`의 값이 Terraform output과 같은지 확인:
-- `d1_databases.database_id`
-- `kv_namespaces.id`
-- `kv_namespaces.preview_id`
-- `r2_buckets.bucket_name`
-
----
-
-## 5) D1 스키마 운영 (카탈로그 도메인)
-
-설정 파일: `domains/catalog/storage/wrangler.toml`
-
-### 5-1. 로컬 마이그레이션 + 시드
-
-```bash
-npx wrangler d1 migrations apply pseudolab-main --local \
-  --config domains/catalog/storage/wrangler.toml
-
-npx wrangler d1 execute pseudolab-main --local \
-  --config domains/catalog/storage/wrangler.toml \
-  --file domains/catalog/storage/seeds/0001_seed_catalog.sql
-```
-
-### 5-2. 리모트(운영) 마이그레이션 + 시드
-
-운영 반영 전 체크:
-- `pnpm wrangler whoami`로 대상 Account 재확인
-- `npx wrangler d1 migrations apply pseudolab-main --local ...`로 로컬 선검증 완료
-- 운영 DB 백업/Export 또는 복구 계획 확보
-- 변경 승인(리뷰/체크리스트) 완료
-
-```bash
+# ⚠️ 반드시 로컬 선검증 후 적용
 npx wrangler d1 migrations apply pseudolab-main --remote \
   --config domains/catalog/storage/wrangler.toml
-
-npx wrangler d1 execute pseudolab-main --remote \
-  --config domains/catalog/storage/wrangler.toml \
-  --file domains/catalog/storage/seeds/0001_seed_catalog.sql
 ```
 
-운영 원칙:
-- 스키마 변경: `migrations create/apply` 사용
-- `d1 execute --file`: 시드/운영성 SQL에만 사용
+**조심할 점**:
+- 로컬(`--local`)에서 먼저 검증 완료한 후 `--remote` 적용
+- 운영 DB 백업/복구 계획 확보 후 진행
+- `0005_drop_events_table.sql`은 데이터 이관 검증 완료 전까지 적용 금지
+- 적용 후 `d1_migrations` 테이블에서 이력 확인 (현재: 0001~0004)
 
-### 5-3. 검증 쿼리
-
-```bash
-# 테이블 행 수
-npx wrangler d1 execute pseudolab-main --local \
-  --config domains/catalog/storage/wrangler.toml \
-  --command "SELECT 'events' AS tbl, COUNT(*) AS cnt FROM events
-             UNION ALL SELECT 'daily_stats', COUNT(*) FROM daily_stats
-             UNION ALL SELECT 'catalog_datasets', COUNT(*) FROM catalog_datasets
-             UNION ALL SELECT 'catalog_columns', COUNT(*) FROM catalog_columns;"
-
-# 인덱스 확인
-npx wrangler d1 execute pseudolab-main --local \
-  --config domains/catalog/storage/wrangler.toml \
-  --command "SELECT name, tbl_name FROM sqlite_master WHERE type='index' ORDER BY tbl_name;"
-
-# 마이그레이션 이력 확인
-npx wrangler d1 execute pseudolab-main --local \
-  --config domains/catalog/storage/wrangler.toml \
-  --command "SELECT name FROM d1_migrations ORDER BY id;"
-```
-
-### 5-4. 마이그레이션 롤백 (되돌리기)
-
-D1은 롤백 전용 명령이 없으므로 수동으로 DROP + 이력 삭제를 해야 합니다.
-`--local`을 `--remote`로 바꾸면 운영 DB에 적용됩니다. **운영 DB는 데이터가 전부 삭제되므로 주의하세요.**
-
-```bash
-# 1) 인덱스 삭제 (0002 되돌리기)
-npx wrangler d1 execute pseudolab-main --local \
-  --config domains/catalog/storage/wrangler.toml \
-  --command "
-    DROP INDEX IF EXISTS idx_events_batch_date;
-    DROP INDEX IF EXISTS idx_events_org_repo_created_at;
-    DROP INDEX IF EXISTS idx_events_type_created_at;
-    DROP INDEX IF EXISTS idx_events_org_created_at_partial;
-    DROP INDEX IF EXISTS idx_daily_stats_org_repo_date;
-    DROP INDEX IF EXISTS idx_daily_stats_date_event_type;
-    DROP INDEX IF EXISTS idx_catalog_datasets_domain_updated_at;
-    DROP INDEX IF EXISTS idx_catalog_datasets_name;
-    DROP INDEX IF EXISTS idx_catalog_columns_pii_only;
-  "
-
-# 2) 테이블 삭제 (0001 되돌리기, FK 순서 주의)
-npx wrangler d1 execute pseudolab-main --local \
-  --config domains/catalog/storage/wrangler.toml \
-  --command "
-    DROP TABLE IF EXISTS catalog_columns;
-    DROP TABLE IF EXISTS catalog_datasets;
-    DROP TABLE IF EXISTS daily_stats;
-    DROP TABLE IF EXISTS events;
-  "
-
-# 3) 마이그레이션 이력 삭제
-npx wrangler d1 execute pseudolab-main --local \
-  --config domains/catalog/storage/wrangler.toml \
-  --command "DELETE FROM d1_migrations WHERE name IN ('0001_catalog_core.sql', '0002_catalog_indexes.sql');"
-```
-
-로컬 DB 완전 초기화 (로컬 전용 간편 방법):
-- 반드시 `domains/catalog/storage/`에서 실행하세요.
-- 저장소 루트에서 `.wrangler/state`를 지우지 마세요(다른 워커 로컬 상태까지 삭제될 수 있음).
-
-```bash
-cd domains/catalog/storage
-rm -rf .wrangler/state
-# 이후 migrations apply --local 부터 다시 시작
-```
-
----
-
-## 6) API/타입 패키지 운영 확인
-
-### 6-1. shared-types 타입 체크
-
-```bash
-pnpm --filter @pseudolab/shared-types typecheck
-pnpm --filter @pseudolab/shared-types lint
-```
-
-### 6-2. API 워커 빌드/로컬 실행
+#### API Worker 배포
 
 ```bash
 pnpm --filter @pseudolab/api build
-pnpm --filter @pseudolab/api dev
-pnpm --filter @pseudolab/api test
+npx wrangler deploy --config apps/api/wrangler.toml
 ```
 
-확인 포인트:
-- `build` 성공 여부
-- `wrangler dev` 구동 시 바인딩 관련 에러 유무
-- 기본 헬스체크 경로 동작 여부 (`/api/health`, `/api/health/ready`)
-
----
-
-### 6-3. API 빠른 확인 (로컬)
-
+**배포 후 확인**:
 ```bash
-curl -i http://127.0.0.1:8787/api/health
-curl -i "http://127.0.0.1:8787/api/catalog/datasets?page=1&pageSize=20"
+curl -i https://<your-worker>.workers.dev/api/health          # → 200
+curl "https://<your-worker>.workers.dev/api/catalog/datasets"  # → JSON + pagination
 ```
 
-확인 포인트:
-- `200` 응답 + JSON 형식
-- validation 실패 시 `application/problem+json` 반환
-
----
-
-## 7) Web 앱 운영 확인 (`apps/web`)
-
-### 7-1. 로컬 실행/검증
+#### Web Pages 배포
 
 ```bash
-pnpm --filter @pseudolab/web dev
-pnpm --filter @pseudolab/web lint
-pnpm --filter @pseudolab/web build
-pnpm --filter @pseudolab/web test
+VITE_API_URL=https://<your-worker>.workers.dev \
+  pnpm turbo build --filter=@pseudolab/web
+npx wrangler pages deploy apps/web/dist --project-name=pseudolab-web
 ```
 
-확인 포인트:
-- `/`, `/datasets`, `/about` 라우팅 정상 동작
-- `VITE_API_URL`이 API 워커 주소를 가리키는지 확인
-- SPA fallback 파일 `apps/web/public/_redirects`가 유지되는지 확인
+**조심할 점**:
+- `VITE_API_URL`이 운영 Worker 주소와 일치해야 함
+- `apps/web/public/_redirects`에 `/* /index.html 200` 규칙 유지 (SPA fallback)
 
-### 7-2. 환경변수
-
-- 예시 파일: `apps/web/.env.example`
-- 필수 키: `VITE_API_URL`
-- 로컬 기본값: `http://localhost:8787`
-
-### 7-3. 배포 메모 (Cloudflare Pages)
-
-- Build command: `pnpm turbo build --filter=@pseudolab/web`
-- Build output directory: `apps/web/dist`
-- Pages 환경변수에 `VITE_API_URL` 설정 필요
-
----
-
-## 8) GitHub ETL 운영 범위(현재)
-
-작업 디렉터리: `domains/github/ingestion/`
-
-### 8-1. 구현 모듈 현황
-
-| 모듈 | 파일 | 설명 |
-|------|------|------|
-| CLI/fetch | `cli.py`, `downloader.py` | 시간별 스트리밍 수집, 재시도, JSONL 출력 |
-| CLI/upload | `cli.py` | R2/D1 업로드 명령 (--target r2/d1/all, --dry-run) |
-| filter | `filter.py` | org/repo/event_type 기반 이벤트 필터링 |
-| transformer | `transformer.py` | 14종 이벤트 페이로드 정규화, EventRow 변환, 검증, 중복제거, DailyStats 집계 |
-| d1 | `d1.py` | D1 HTTP API 클라이언트 (parameterized query, 바이트 기반 배치 분할) |
-| r2 | `r2.py` | R2 Wrangler CLI 업로드 (org/repo 그룹핑, gzip 압축) |
-| models | `models.py` | GitHubEvent, Actor, Repo, Org Pydantic 모델 |
-| config | `config.py` | YAML 기반 설정 로딩 (D1 account_id/api_token 포함) |
-
-`transformer.py` 주요 구성:
-- `EventRow` (TypedDict): D1 events 테이블 행 타입 (id, type, actor_login, repo_name, org_name, payload, created_at, batch_date)
-- `DailyStatsRow` (TypedDict): D1 daily_stats 테이블 행 타입 (date, org_name, repo_name, event_type, count)
-- `TransformStats` (dataclass): 입출력 통계 (total_input/output, duplicates_removed, validation_errors, type별 카운트)
-- `normalize_payload()`: 14종 이벤트 타입별 페이로드 추출 + fallback
-- `to_event_row()`: GitHubEvent → EventRow 변환
-- `deduplicate()`: 이벤트 ID 기반 중복 제거
-- `validate_row()`: 필수 필드/JSON/날짜 형식 검증
-- `transform_events()`: 전체 파이프라인 (변환 → 검증 → 중복제거 → 통계)
-- `compute_daily_stats()`: EventRow → DailyStatsRow 집계
-
-`d1.py` 주요 구성:
-- `D1InsertResult` (dataclass): 적재 결과 (total_rows, rows_inserted, rows_skipped, batches_executed, errors, dry_run)
-- `insert_events()`: INSERT OR IGNORE 배치 적재 (바이트 기반 동적 분할, 700KB + 500행 이중 상한)
-- `insert_daily_stats()`: ON CONFLICT DO UPDATE SET count=excluded.count UPSERT
-- `_d1_query()`: D1 HTTP API 호출 (지수 백오프 재시도, 5xx/429만 재시도)
-
-`r2.py` 주요 구성:
-- `R2UploadResult` (dataclass): 업로드 결과 (files_uploaded, files_skipped, bytes_total, errors, dry_run)
-- `upload_events_to_r2()`: org/repo별 그룹핑 → gzip 압축 → Wrangler CLI 업로드
-- `_wrangler_r2_put()`: subprocess 호출 + 지수 백오프 재시도
-- R2 키 형식: `{prefix}/{org}/{repo}/{date}.jsonl.gz`
-
-### 8-2. 가능한 점검
+### 2-3. ETL 운영 실행
 
 ```bash
-uv sync
-uv run pytest domains/github/ingestion/tests/          # 165 tests
-uv run ruff check domains/github/ingestion/
-uv run ruff format --check domains/github/ingestion/
-uv run gharchive-etl --help
-uv run gharchive-etl --version
-uv run gharchive-etl fetch --date 2024-01-15 --start-hour 0 --end-hour 0 --no-json-log
-uv run gharchive-etl fetch --date 2024-01-15 --start-hour 0 --end-hour 1 \
-  --output-jsonl /tmp/gharchive-2024-01-15.jsonl --no-json-log
+# 실제 수집 + 적재
+uv run gharchive-etl fetch --date 2024-01-15 --start-hour 0 --end-hour 23 --no-json-log
 uv run gharchive-etl upload --date 2024-01-15 --input-dir /tmp/data \
-  --target all --dry-run --config domains/github/ingestion/config.yaml --no-json-log
+  --target all --config domains/github/ingestion/config.yaml --no-json-log
 ```
 
-확인 포인트:
-- `pytest`: 165개 테스트 전체 통과 (filter 74 + transformer 38 + d1 22 + r2 17 + upload_cli 11 + 기타 3)
-- `ruff check/format`: 린트/포매팅 오류 없음
-- `fetch` 성공 시 요약 로그(`FETCH_SUMMARY`)가 출력되고 exit code `0`
-- 일부 시간대 실패 시 실패 시간 목록 출력 후 exit code `1`
-- `--output-jsonl`에는 필터 통과 이벤트만 기록됨
-- `404` 시간대는 경고만 남기고 다음 시간대로 진행
-- `upload` 성공 시 `Upload complete` 요약 출력, exit code `0`
-- `upload` 에러 발생 시 에러 건수 출력 후 exit code `1`
-- `--dry-run` 시 실제 업로드 없이 `DRY RUN` 표시, auth/install 사전 검증은 수행
+**필수 환경변수**:
 
-### 8-3. upload 환경변수
-
-| 환경변수 | 용도 | 필수 조건 |
+| 환경변수 | 용도 | 필요 시점 |
 |----------|------|-----------|
 | `CLOUDFLARE_ACCOUNT_ID` | D1 HTTP API 계정 ID | `--target d1` 또는 `all` |
 | `CLOUDFLARE_API_TOKEN` | D1 HTTP API 인증 토큰 | `--target d1` 또는 `all` |
-| `D1_DATABASE_ID` | D1 데이터베이스 ID 오버라이드 | 선택 (config.yaml 우선) |
+| `D1_DATABASE_ID` | D1 DB ID 오버라이드 | 선택 (config.yaml 우선) |
 
-R2 업로드는 `wrangler login` 또는 `CLOUDFLARE_API_TOKEN` 환경변수를 통한 Wrangler CLI 인증을 사용한다.
+**조심할 점**:
+- `--dry-run`으로 먼저 검증 후 실제 실행 권장
+- 배치 크기 초과(700KB) 행은 자동 스킵 — 경고 로그 확인
+- D1 API 429/5xx는 자동 재시도됨 (최대 3회, 지수 백오프)
+- `INSERT OR IGNORE`로 멱등성 보장 — 재실행 안전
 
-### 8-4. 현재 미구현 범위(후속 티켓)
+### 2-4. Airflow 운영
 
-- `fetch → upload` 자동 연결 파이프라인 (현재 수동 `--input-dir` 지정)
-- 병렬 다운로드/스케줄러 연동
-- CI/CD 파이프라인 연동
+```bash
+cd domains/github/ingestion
+
+# 시작/종료
+docker compose up -d
+docker compose down
+
+# 상태 확인
+docker compose exec airflow airflow dags list
+
+# 수동 실행 (특정 날짜)
+docker compose exec airflow airflow dags trigger github_archive_daily --exec-date 2024-06-15
+```
+
+**필수 환경변수** (`.env` 파일):
+
+| 환경변수 | 필수 |
+|----------|------|
+| `CLOUDFLARE_ACCOUNT_ID` | O |
+| `CLOUDFLARE_API_TOKEN` | O |
+| `D1_DATABASE_ID` | O |
+| `R2_ACCESS_KEY_ID` | O |
+| `R2_SECRET_ACCESS_KEY` | O |
+| `SLACK_WEBHOOK_URL` | X (미설정 시 알림 스킵) |
+
+**조심할 점**:
+- DAG이 UI에 안 보이면 볼륨 마운트 확인: `docker compose exec airflow ls /opt/airflow/dags/`
+- `ModuleNotFoundError: gharchive_etl` → `docker compose up -d --build` 재빌드
+- cleanup Task는 `trigger_rule=all_success` — 업로드 실패 시 파일 보존됨 (재실행 가능)
+
+### 2-5. 인프라 변경 (Terraform)
+
+```bash
+cd infra
+terraform plan    # 변경 사항 미리보기
+terraform apply   # 반영
+terraform output  # 리소스 ID 확인
+```
+
+**조심할 점**:
+- 적용 후 `apps/api/wrangler.toml`의 바인딩 값과 `terraform output` 일치 여부 반드시 확인
+  - `d1_databases.database_id`, `kv_namespaces.id`, `r2_buckets.bucket_name`
 
 ---
 
-## 9) 장애/이상 징후 점검 체크리스트
+## 3. 장애 대응 빠른 참조
 
-1. Terraform 변경 후 API가 실패할 때
-- `cd infra && terraform output` 값과 `apps/api/wrangler.toml` 바인딩 값 일치 여부 확인
-
-2. D1 조회/적재 이상 시
-- `d1_migrations` 이력 확인
-- 인덱스 누락 여부 확인 (`sqlite_master` 조회)
-- 시드 재적용 시 `INSERT OR IGNORE`로 중복 안전한지 확인
-
-3. ETL fetch 실행 이상 시
-- `uv run gharchive-etl fetch ... --no-json-log`로 재현 후 실패 시간대/이벤트 코드 확인
-- `NETWORK_ERROR`가 반복되면 네트워크/gharchive 상태를 점검하고 시간대 단위로 재실행
-- `PARSE_ERROR` 비율이 높으면 원본 시간대 gzip 손상 여부와 파서 로그를 우선 확인
-
-4. ETL upload 실행 이상 시
-- exit code `1`이면 `ERROR: N upload error(s) occurred` 메시지 확인 후 각 에러 로그 추적
-- D1 적재 실패: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` 환경변수 설정 확인, D1 API 429/5xx는 자동 재시도됨
-- R2 업로드 실패: `wrangler whoami`로 인증 확인, `wrangler r2 object put` 수동 테스트
-- `--dry-run`으로 환경 검증 후 실제 업로드 수행 권장
-- 배치 크기 초과(700KB) 행은 자동 스킵되며 경고 로그가 남음
+| 증상 | 원인 | 해결 |
+|------|------|------|
+| API 502/503 | D1 바인딩 불일치 | `wrangler tail`로 로그 확인 → wrangler.toml vs terraform output 비교 |
+| Web에서 API 호출 실패 | CORS / URL 불일치 | `VITE_API_URL` 확인 |
+| Pages 라우팅 404 | SPA fallback 누락 | `apps/web/public/_redirects` 파일 확인 |
+| ETL fetch 실패 | 네트워크/gharchive 이상 | `--no-json-log`로 재현, 시간대별 재실행 |
+| ETL upload 실패 | API 토큰 만료/미설정 | 환경변수 확인, `--dry-run`으로 사전 검증 |
+| D1 적재 이상 | 마이그레이션 미적용 | `d1_migrations` 이력 + 인덱스 확인 |
+| Airflow DAG 안 보임 | 볼륨 마운트 불일치 | `docker compose exec airflow ls /opt/airflow/dags/` |
+| Airflow `ModuleNotFoundError` | 이미지 빌드 누락 | `docker compose up -d --build` |
+| Airflow D1 적재 실패 (401) | API 토큰 만료 | `.env`의 `CLOUDFLARE_API_TOKEN` 확인 |
+| Airflow 컨테이너 재시작 | 포트 충돌/메모리 부족 | `docker compose logs -f`로 확인 |
+| 빌드 실패 (tsc 에러) | 타입 불일치 | `pnpm check`로 재현, `shared-types` 빌드 선행 확인 |
 
 ---
 
-## 10) 참고 문서
+## 4. 참고 문서
 
-- 완료 보고서
-  - `ticket-system/ticket-done/[shared]001-모노레포-초기-설정.md`
-  - `ticket-system/ticket-done/[shared]002-cloudflare-리소스-프로비저닝.md`
-  - `ticket-system/ticket-done/[shared]003-공유-타입스크립트-타입-정의.md`
-  - `ticket-system/ticket-done/[github-archive]004-python-etl-프로젝트-셋업.md`
-  - `ticket-system/ticket-done/[github-archive]008-github-archive-데이터-수집.md`
-  - `ticket-system/ticket-done/[catalog]005-D1-카탈로그-스키마-설계.md`
-  - `ticket-system/ticket-done/[catalog]006-hono-api-보일러플레이트.md`
-  - `ticket-system/ticket-done/[catalog]007-react-vite-프로젝트-셋업.md`
-  - `ticket-system/ticket-done/[github-archive]009-이벤트-필터링-가공-로직.md`
-  - `ticket-system/ticket-done/[github-archive]010-wrangler-업로드-스크립트.md`
-- 운영 상세
-  - `infra/README.md`
-  - `domains/catalog/storage/README.md`
+### 상세 기술 레퍼런스
+
+- **[`ops-reference.md`](ops-reference.md)** — 모듈 상세 구성, D1 검증 쿼리, 롤백 절차, Airflow DAG 상세, 스키마 브라우저 UI 테스트 가이드
+
+### 인프라/스키마
+
+- `infra/README.md` — Terraform 상세
+- `domains/catalog/storage/README.md` — D1 스키마 상세
+
+### 완료 보고서
+
+| 티켓 | 범위 |
+|------|------|
+| `[shared]001-모노레포-초기-설정` | 모노레포 구성 |
+| `[shared]002-cloudflare-리소스-프로비저닝` | Terraform 인프라 |
+| `[shared]003-공유-타입스크립트-타입-정의` | shared-types 패키지 |
+| `[github-archive]004-python-etl-프로젝트-셋업` | ETL 프로젝트 골격 |
+| `[github-archive]008-github-archive-데이터-수집` | ETL fetch 구현 |
+| `[github-archive]009-이벤트-필터링-가공-로직` | filter + transformer |
+| `[github-archive]010-wrangler-업로드-스크립트` | upload (R2 + D1) |
+| `[github-archive]011-airflow-dag-작성` | Airflow DAG 자동화 |
+| `[github-archive]040-이벤트-타입별-DL-테이블-전환` | events → 14개 DL 테이블 |
+| `[catalog]005-D1-카탈로그-스키마-설계` | D1 스키마 |
+| `[catalog]006-hono-api-보일러플레이트` | Hono API |
+| `[catalog]007-react-vite-프로젝트-셋업` | Web 앱 |
+| `[catalog]012-스키마-브라우저-UI` | 스키마 브라우저 |
+
+> 보고서 경로: `ticket-system/ticket-done/`

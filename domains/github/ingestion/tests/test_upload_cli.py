@@ -1,4 +1,4 @@
-"""CLI upload 명령 테스트."""
+"""CLI upload / verify-aggregation / quality-check 명령 테스트."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import yaml
 from click.testing import CliRunner
 from gharchive_etl.cli import _load_jsonl, main
 from gharchive_etl.d1 import D1InsertResult
+from gharchive_etl.quality import ConsistencyReport, QualityReport, QualityRuleResult
 from gharchive_etl.r2 import R2UploadResult
 
 # ── 헬퍼 함수 ────────────────────────────────────────
@@ -75,13 +76,32 @@ def _make_r2_result(**kwargs: Any) -> R2UploadResult:
     return R2UploadResult(**kwargs)
 
 
+def _make_dl_results(**kwargs: Any) -> dict[str, D1InsertResult]:
+    """insert_all_dl_rows 반환값 헬퍼 (dict[str, D1InsertResult])."""
+    return {"dl_push_events": D1InsertResult(**kwargs)}
+
+
+def _make_daily_stats_row(**kwargs: Any) -> dict[str, Any]:
+    """compute_daily_stats_from_dl 반환값용 헬퍼."""
+    row = {
+        "date": "2024-01-15",
+        "org_name": "pseudolab",
+        "repo_name": "pseudolab/test-repo",
+        "event_type": "PushEvent",
+        "count": 1,
+    }
+    row.update(kwargs)
+    return row
+
+
 # ── 업로드 명령 테스트 ────────────────────────────────
 
 
 _MOCK_D1_AUTH = "gharchive_etl.cli._validate_d1_auth"
 _MOCK_WRANGLER = "gharchive_etl.cli._check_wrangler_installed"
-_MOCK_INSERT_EVENTS = "gharchive_etl.cli.insert_events"
+_MOCK_INSERT_DL = "gharchive_etl.cli.insert_all_dl_rows"
 _MOCK_INSERT_STATS = "gharchive_etl.cli.insert_daily_stats"
+_MOCK_COMPUTE_STATS_FROM_DL = "gharchive_etl.cli.compute_daily_stats_from_dl"
 _MOCK_R2_UPLOAD = "gharchive_etl.cli.upload_events_to_r2"
 
 
@@ -102,8 +122,11 @@ class TestUploadCommand:
                 _MOCK_R2_UPLOAD, return_value=_make_r2_result(files_uploaded=1, bytes_total=100)
             ) as mock_r2,
             patch(
-                _MOCK_INSERT_EVENTS, return_value=_make_d1_result(rows_inserted=1)
-            ) as mock_d1_events,
+                _MOCK_INSERT_DL, return_value=_make_dl_results(rows_inserted=1)
+            ) as mock_d1_dl,
+            patch(
+                _MOCK_COMPUTE_STATS_FROM_DL, return_value=[_make_daily_stats_row(count=1)]
+            ),
             patch(
                 _MOCK_INSERT_STATS, return_value=_make_d1_result(rows_inserted=1)
             ) as mock_d1_stats,
@@ -128,7 +151,7 @@ class TestUploadCommand:
             assert result.exit_code == 0, result.output
             assert "Upload complete" in result.output
             mock_r2.assert_called_once()
-            mock_d1_events.assert_called_once()
+            mock_d1_dl.assert_called_once()
             mock_d1_stats.assert_called_once()
 
     def test_upload_r2_only(self, tmp_path: Path) -> None:
@@ -143,7 +166,7 @@ class TestUploadCommand:
             patch(
                 _MOCK_R2_UPLOAD, return_value=_make_r2_result(files_uploaded=1, bytes_total=50)
             ) as mock_r2,
-            patch(_MOCK_INSERT_EVENTS) as mock_d1_events,
+            patch(_MOCK_INSERT_DL) as mock_d1_dl,
             patch(_MOCK_INSERT_STATS) as mock_d1_stats,
         ):
             runner = CliRunner()
@@ -165,7 +188,7 @@ class TestUploadCommand:
 
             assert result.exit_code == 0, result.output
             mock_r2.assert_called_once()
-            mock_d1_events.assert_not_called()
+            mock_d1_dl.assert_not_called()
             mock_d1_stats.assert_not_called()
 
     def test_upload_d1_only(self, tmp_path: Path) -> None:
@@ -179,8 +202,11 @@ class TestUploadCommand:
             patch(_MOCK_D1_AUTH),
             patch(_MOCK_R2_UPLOAD) as mock_r2,
             patch(
-                _MOCK_INSERT_EVENTS, return_value=_make_d1_result(rows_inserted=1)
-            ) as mock_d1_events,
+                _MOCK_INSERT_DL, return_value=_make_dl_results(rows_inserted=1)
+            ) as mock_d1_dl,
+            patch(
+                _MOCK_COMPUTE_STATS_FROM_DL, return_value=[_make_daily_stats_row(count=1)]
+            ),
             patch(
                 _MOCK_INSERT_STATS, return_value=_make_d1_result(rows_inserted=1)
             ) as mock_d1_stats,
@@ -204,7 +230,7 @@ class TestUploadCommand:
 
             assert result.exit_code == 0, result.output
             mock_r2.assert_not_called()
-            mock_d1_events.assert_called_once()
+            mock_d1_dl.assert_called_once()
             mock_d1_stats.assert_called_once()
 
     def test_upload_dry_run(self, tmp_path: Path) -> None:
@@ -219,8 +245,11 @@ class TestUploadCommand:
             patch(_MOCK_WRANGLER),
             patch(_MOCK_R2_UPLOAD, return_value=_make_r2_result(dry_run=True)) as mock_r2,
             patch(
-                _MOCK_INSERT_EVENTS, return_value=_make_d1_result(dry_run=True)
-            ) as mock_d1_events,
+                _MOCK_INSERT_DL, return_value=_make_dl_results(dry_run=True)
+            ) as mock_d1_dl,
+            patch(
+                _MOCK_COMPUTE_STATS_FROM_DL, return_value=[_make_daily_stats_row(count=1)]
+            ),
             patch(_MOCK_INSERT_STATS, return_value=_make_d1_result(dry_run=True)) as mock_d1_stats,
         ):
             runner = CliRunner()
@@ -248,7 +277,7 @@ class TestUploadCommand:
             _, r2_kwargs = mock_r2.call_args
             assert r2_kwargs["dry_run"] is True
 
-            _, d1_kwargs = mock_d1_events.call_args
+            _, d1_kwargs = mock_d1_dl.call_args
             assert d1_kwargs["dry_run"] is True
 
             _, stats_kwargs = mock_d1_stats.call_args
@@ -266,7 +295,8 @@ class TestUploadCommand:
             patch(_MOCK_D1_AUTH),
             patch(_MOCK_WRANGLER),
             patch(_MOCK_R2_UPLOAD, return_value=_make_r2_result(files_uploaded=1)) as mock_r2,
-            patch(_MOCK_INSERT_EVENTS, return_value=_make_d1_result(rows_inserted=1)),
+            patch(_MOCK_INSERT_DL, return_value=_make_dl_results(rows_inserted=1)),
+            patch(_MOCK_COMPUTE_STATS_FROM_DL, return_value=[_make_daily_stats_row(count=1)]),
             patch(_MOCK_INSERT_STATS, return_value=_make_d1_result(rows_inserted=1)),
         ):
             runner = CliRunner()
@@ -303,7 +333,7 @@ class TestUploadCommand:
             patch(_MOCK_D1_AUTH),
             patch(_MOCK_WRANGLER),
             patch(_MOCK_R2_UPLOAD) as mock_r2,
-            patch(_MOCK_INSERT_EVENTS) as mock_d1_events,
+            patch(_MOCK_INSERT_DL) as mock_d1_dl,
         ):
             runner = CliRunner()
             result = runner.invoke(
@@ -326,7 +356,7 @@ class TestUploadCommand:
             assert "SKIP" in result.output
             assert "dates_skipped=1" in result.output
             mock_r2.assert_not_called()
-            mock_d1_events.assert_not_called()
+            mock_d1_dl.assert_not_called()
 
     def test_upload_nonzero_exit_on_errors(self, tmp_path: Path) -> None:
         """업로드 에러 발생 시 exit_code != 0."""
@@ -345,8 +375,9 @@ class TestUploadCommand:
                 ),
             ),
             patch(
-                _MOCK_INSERT_EVENTS, return_value=_make_d1_result(rows_inserted=1)
+                _MOCK_INSERT_DL, return_value=_make_dl_results(rows_inserted=1)
             ),
+            patch(_MOCK_COMPUTE_STATS_FROM_DL, return_value=[_make_daily_stats_row(count=1)]),
             patch(
                 _MOCK_INSERT_STATS, return_value=_make_d1_result(rows_inserted=1)
             ),
@@ -370,6 +401,78 @@ class TestUploadCommand:
 
             assert result.exit_code != 0
             assert "Upload complete" in result.output
+
+    def test_upload_skips_daily_stats_when_dl_errors(self, tmp_path: Path) -> None:
+        """DL 적재 에러가 있으면 daily_stats 갱신을 수행하지 않는다."""
+        config_path = _write_config(tmp_path)
+        input_dir = tmp_path / "data"
+        input_dir.mkdir()
+        _write_jsonl(input_dir / "2024-01-15.jsonl", [_sample_event("1")])
+
+        with (
+            patch(_MOCK_D1_AUTH),
+            patch(
+                _MOCK_INSERT_DL,
+                return_value=_make_dl_results(rows_inserted=0, errors=["dl insert failed"]),
+            ),
+            patch(_MOCK_INSERT_STATS) as mock_d1_stats,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(
+                main,
+                [
+                    "upload",
+                    "--date",
+                    "2024-01-15",
+                    "--input-dir",
+                    str(input_dir),
+                    "--target",
+                    "d1",
+                    "--config",
+                    str(config_path),
+                    "--no-json-log",
+                ],
+            )
+
+            assert result.exit_code != 0
+            assert "skip daily stats" in result.output
+            mock_d1_stats.assert_not_called()
+
+    def test_upload_skips_daily_stats_when_dl_rows_skipped(self, tmp_path: Path) -> None:
+        """DL rows_skipped가 있으면 daily_stats 갱신을 수행하지 않는다."""
+        config_path = _write_config(tmp_path)
+        input_dir = tmp_path / "data"
+        input_dir.mkdir()
+        _write_jsonl(input_dir / "2024-01-15.jsonl", [_sample_event("1")])
+
+        with (
+            patch(_MOCK_D1_AUTH),
+            patch(
+                _MOCK_INSERT_DL,
+                return_value=_make_dl_results(rows_inserted=1, rows_skipped=1),
+            ),
+            patch(_MOCK_INSERT_STATS) as mock_d1_stats,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(
+                main,
+                [
+                    "upload",
+                    "--date",
+                    "2024-01-15",
+                    "--input-dir",
+                    str(input_dir),
+                    "--target",
+                    "d1",
+                    "--config",
+                    str(config_path),
+                    "--no-json-log",
+                ],
+            )
+
+            assert result.exit_code != 0
+            assert "skip daily stats" in result.output
+            mock_d1_stats.assert_not_called()
 
     def test_upload_d1_auth_missing(self, tmp_path: Path) -> None:
         """D1 인증 실패 -> 에러 종료."""
@@ -446,3 +549,178 @@ class TestLoadJsonl:
         events, errors = _load_jsonl(jsonl_path)
         assert len(events) == 0
         assert errors == 0
+
+
+# ── verify-aggregation 명령 테스트 ────────────────────
+
+
+_MOCK_CONSISTENCY = "gharchive_etl.quality.check_daily_stats_consistency"
+
+
+class TestVerifyAggregation:
+    """verify-aggregation 명령 테스트."""
+
+    def test_verify_success(self, tmp_path: Path) -> None:
+        """정합성 검증 통과 시 exit_code == 0."""
+        config_path = _write_config(tmp_path)
+        report = ConsistencyReport(
+            batch_date="2024-01-15",
+            total_event_rows=10,
+            total_daily_stats=3,
+            mismatched_keys=0,
+            missing_in_stats=0,
+            extra_in_stats=0,
+            passed=True,
+        )
+
+        with patch(_MOCK_CONSISTENCY, return_value=report):
+            runner = CliRunner()
+            result = runner.invoke(
+                main,
+                [
+                    "verify-aggregation",
+                    "--date", "2024-01-15",
+                    "--config", str(config_path),
+                    "--no-json-log",
+                ],
+            )
+
+            assert result.exit_code == 0, result.output
+            assert "PASSED" in result.output
+
+    def test_verify_failure(self, tmp_path: Path) -> None:
+        """정합성 검증 실패 시 exit_code != 0."""
+        config_path = _write_config(tmp_path)
+        report = ConsistencyReport(
+            batch_date="2024-01-15",
+            total_event_rows=10,
+            total_daily_stats=3,
+            mismatched_keys=2,
+            missing_in_stats=1,
+            extra_in_stats=0,
+            passed=False,
+        )
+
+        with patch(_MOCK_CONSISTENCY, return_value=report):
+            runner = CliRunner()
+            result = runner.invoke(
+                main,
+                [
+                    "verify-aggregation",
+                    "--date", "2024-01-15",
+                    "--config", str(config_path),
+                    "--no-json-log",
+                ],
+            )
+
+            assert result.exit_code != 0
+            assert "FAILED" in result.output
+
+
+# ── quality-check 명령 테스트 ─────────────────────────
+
+
+_MOCK_QUALITY = "gharchive_etl.quality.run_quality_checks"
+
+
+class TestQualityCheck:
+    """quality-check 명령 테스트."""
+
+    def test_quality_check_success(self, tmp_path: Path) -> None:
+        """품질 검증 통과 시 exit_code == 0."""
+        config_path = _write_config(tmp_path)
+        report = QualityReport(
+            batch_date="2024-01-15",
+            passed=True,
+            total_rules=6,
+            failed_rules=0,
+            results=[
+                QualityRuleResult(
+                    rule_id="DQ001", severity="ERROR",
+                    passed=True, checked_rows=10, failed_rows=0,
+                ),
+            ],
+        )
+
+        with patch(_MOCK_QUALITY, return_value=report):
+            runner = CliRunner()
+            result = runner.invoke(
+                main,
+                [
+                    "quality-check",
+                    "--date", "2024-01-15",
+                    "--config", str(config_path),
+                    "--no-json-log",
+                ],
+            )
+
+            assert result.exit_code == 0, result.output
+            assert "PASSED" in result.output
+
+    def test_quality_check_failure(self, tmp_path: Path) -> None:
+        """품질 검증 실패 시 exit_code != 0 + failed rule_id 출력."""
+        config_path = _write_config(tmp_path)
+        report = QualityReport(
+            batch_date="2024-01-15",
+            passed=False,
+            total_rules=6,
+            failed_rules=1,
+            results=[
+                QualityRuleResult(
+                    rule_id="DQ001", severity="ERROR",
+                    passed=False, checked_rows=10, failed_rows=2,
+                    message="필수 필드 null/empty 검사: 2건 실패",
+                ),
+                QualityRuleResult(
+                    rule_id="DQ002", severity="ERROR",
+                    passed=True, checked_rows=10, failed_rows=0,
+                ),
+            ],
+        )
+
+        with patch(_MOCK_QUALITY, return_value=report):
+            runner = CliRunner()
+            result = runner.invoke(
+                main,
+                [
+                    "quality-check",
+                    "--date", "2024-01-15",
+                    "--config", str(config_path),
+                    "--no-json-log",
+                ],
+            )
+
+            assert result.exit_code != 0
+            assert "FAILED" in result.output
+            assert "DQ001" in result.output
+
+    def test_quality_check_report_json(self, tmp_path: Path) -> None:
+        """--report-json 옵션 → JSON 파일 생성 확인."""
+        config_path = _write_config(tmp_path)
+        report_path = tmp_path / "report" / "quality.json"
+        report = QualityReport(
+            batch_date="2024-01-15",
+            passed=True,
+            total_rules=6,
+            failed_rules=0,
+            results=[],
+        )
+
+        with patch(_MOCK_QUALITY, return_value=report):
+            runner = CliRunner()
+            result = runner.invoke(
+                main,
+                [
+                    "quality-check",
+                    "--date", "2024-01-15",
+                    "--report-json", str(report_path),
+                    "--config", str(config_path),
+                    "--no-json-log",
+                ],
+            )
+
+            assert result.exit_code == 0, result.output
+            assert report_path.exists()
+            data = orjson.loads(report_path.read_bytes())
+            assert data["batch_date"] == "2024-01-15"
+            assert data["passed"] is True

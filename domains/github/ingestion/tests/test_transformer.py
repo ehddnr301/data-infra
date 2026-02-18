@@ -1,19 +1,19 @@
-"""이벤트 가공 로직 테스트."""
+"""DL 테이블 변환 로직 테스트."""
 
 from __future__ import annotations
 
-import json
+from datetime import datetime, timezone
 from typing import Any
 
+import pytest
+from gharchive_etl.dl_models import EVENT_TYPE_TO_TABLE, EXPLODED_TABLES
 from gharchive_etl.models import GitHubEvent
 from gharchive_etl.transformer import (
-    EventRow,
+    DLRowsByTable,
+    _to_kst,
     compute_daily_stats,
-    deduplicate,
-    normalize_payload,
-    to_event_row,
     transform_events,
-    validate_row,
+    validate_dl_row,
 )
 
 
@@ -39,457 +39,561 @@ def _make_event(
     return GitHubEvent.model_validate(data)
 
 
-def _make_row(**overrides: Any) -> EventRow:
-    """테스트용 EventRow 헬퍼."""
-    defaults: dict[str, Any] = {
-        "id": "1",
-        "type": "PushEvent",
-        "actor_login": "testuser",
-        "repo_name": "pseudolab/test-repo",
-        "org_name": "pseudolab",
-        "payload": "{}",
-        "created_at": "2024-01-15T10:30:00",
-        "batch_date": "2024-01-15",
-    }
-    defaults.update(overrides)
-    return defaults  # type: ignore[return-value]
+# ── KST 변환 테스트 ──────────────────────────────────────
+
+class TestKstConversion:
+    """UTC → KST 변환 테스트."""
+
+    def test_utc_to_kst_basic(self) -> None:
+        dt = datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
+        ts_kst, base_date = _to_kst(dt)
+        assert ts_kst.startswith("2024-01-15T19:30:00")
+        assert base_date == "2024-01-15"
+
+    def test_utc_to_kst_date_boundary(self) -> None:
+        """UTC 15:30 → KST 다음날 00:30."""
+        dt = datetime(2024, 1, 15, 15, 30, 0, tzinfo=timezone.utc)
+        ts_kst, base_date = _to_kst(dt)
+        assert ts_kst.startswith("2024-01-16T00:30:00")
+        assert base_date == "2024-01-16"
+
+    def test_utc_to_kst_midnight(self) -> None:
+        """UTC 15:00 → KST 00:00."""
+        dt = datetime(2024, 1, 15, 15, 0, 0, tzinfo=timezone.utc)
+        ts_kst, base_date = _to_kst(dt)
+        assert ts_kst.startswith("2024-01-16T00:00:00")
+        assert base_date == "2024-01-16"
+
+    def test_naive_datetime_treated_as_utc(self) -> None:
+        dt = datetime(2024, 1, 15, 10, 30, 0)  # naive
+        ts_kst, base_date = _to_kst(dt)
+        assert ts_kst.startswith("2024-01-15T19:30:00")
+        assert base_date == "2024-01-15"
 
 
-class TestNormalizePayload:
-    """payload 정규화 로직 테스트."""
+# ── PushEvent 변환 테스트 ────────────────────────────────
 
-    def test_push_event(self) -> None:
-        payload = {
-            "size": 2,
-            "distinct_size": 1,
+class TestPushEventConversion:
+    """PushEvent → dl_push_events 변환 테스트."""
+
+    def test_single_commit(self) -> None:
+        event = _make_event(payload={
             "ref": "refs/heads/main",
+            "head": "abc123",
+            "before": "def456",
             "commits": [
-                {"sha": "abc123", "message": "Initial commit"},
-                {"sha": "def456", "message": "Update README"},
+                {"sha": "abc123", "message": "Init", "author": {"name": "u", "email": "u@e"}, "distinct": True, "url": "http://x"},
             ],
-        }
-        result = normalize_payload("PushEvent", payload)
-        assert result["size"] == 2
-        assert result["distinct_size"] == 1
-        assert result["ref"] == "refs/heads/main"
-        assert len(result["commits"]) == 2
-        assert result["commits"][0]["sha"] == "abc123"
-        assert result["commits"][0]["message"] == "Initial commit"
+        })
+        result, _ = transform_events([event])
+        rows = result["dl_push_events"]
+        assert len(rows) == 1
+        assert rows[0]["commit_sha"] == "abc123"
+        assert rows[0]["ref_name"] == "main"
+        assert rows[0]["is_branch_ref"] == 1
+        assert rows[0]["is_tag_ref"] == 0
 
-    def test_push_event_long_message_truncated(self) -> None:
-        payload = {
-            "commits": [{"sha": "abc123", "message": "a" * 300}],
-        }
-        result = normalize_payload("PushEvent", payload)
-        assert len(result["commits"][0]["message"]) == 200
+    def test_multiple_commits(self) -> None:
+        event = _make_event(payload={
+            "ref": "refs/heads/dev",
+            "commits": [
+                {"sha": "a1", "message": "m1", "author": {"name": "u"}, "distinct": True},
+                {"sha": "a2", "message": "m2", "author": {"name": "u"}, "distinct": False},
+                {"sha": "a3", "message": "m3", "author": {"name": "u"}, "distinct": True},
+            ],
+        })
+        result, _ = transform_events([event])
+        rows = result["dl_push_events"]
+        assert len(rows) == 3
+        assert all(r["event_id"] == "1" for r in rows)
+        assert rows[1]["commit_distinct"] == 0
 
-    def test_pull_request_event(self) -> None:
-        payload = {
+    def test_empty_commits_header_row(self) -> None:
+        event = _make_event(payload={
+            "ref": "refs/heads/main",
+            "commits": [],
+        })
+        result, _ = transform_events([event])
+        rows = result["dl_push_events"]
+        assert len(rows) == 1
+        assert rows[0]["commit_sha"] == "__empty__#0"
+        assert rows[0]["commit_author_name"] is None
+
+    def test_commit_message_truncation(self) -> None:
+        event = _make_event(payload={
+            "commits": [{"sha": "a1", "message": "x" * 300}],
+        })
+        result, _ = transform_events([event])
+        rows = result["dl_push_events"]
+        assert len(rows[0]["commit_message"]) == 200
+
+    def test_tag_ref_detection(self) -> None:
+        event = _make_event(payload={
+            "ref": "refs/tags/v1.0",
+            "commits": [{"sha": "a1"}],
+        })
+        result, _ = transform_events([event])
+        row = result["dl_push_events"][0]
+        assert row["is_tag_ref"] == 1
+        assert row["is_branch_ref"] == 0
+        assert row["ref_name"] == "v1.0"
+
+    def test_null_sha_sentinel_index(self) -> None:
+        event = _make_event(payload={
+            "commits": [
+                {"sha": None, "message": "m1"},
+                {"sha": None, "message": "m2"},
+            ],
+        })
+        result, _ = transform_events([event])
+        rows = result["dl_push_events"]
+        assert rows[0]["commit_sha"] == "__no_commit__#0"
+        assert rows[1]["commit_sha"] == "__no_commit__#1"
+
+
+# ── PullRequestEvent 변환 테스트 ─────────────────────────
+
+class TestPullRequestEventConversion:
+    """PullRequestEvent → dl_pull_request_events 변환 테스트."""
+
+    def test_full_pr_fields(self) -> None:
+        event = _make_event(event_type="PullRequestEvent", payload={
             "action": "opened",
             "number": 42,
             "pull_request": {
                 "title": "Fix bug",
+                "html_url": "https://github.com/org/repo/pull/42",
                 "state": "open",
-                "merged": False,
+                "draft": False,
+                "body": "Description here",
+                "user": {"login": "author", "id": 10},
+                "head": {"ref": "feature", "sha": "h1"},
+                "base": {"ref": "main", "sha": "b1"},
+                "commits": 3,
                 "additions": 10,
                 "deletions": 5,
-                "changed_files": 3,
+                "changed_files": 2,
+                "comments": 1,
+                "review_comments": 0,
+                "merged": False,
+                "merge_commit_sha": None,
             },
-        }
-        result = normalize_payload("PullRequestEvent", payload)
-        assert result["action"] == "opened"
-        assert result["number"] == 42
-        assert result["title"] == "Fix bug"
-        assert result["state"] == "open"
-        assert result["merged"] is False
-        assert result["additions"] == 10
-        assert result["deletions"] == 5
-        assert result["changed_files"] == 3
+        })
+        result, _ = transform_events([event])
+        rows = result["dl_pull_request_events"]
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["pr_action"] == "opened"
+        assert row["pr_number"] == 42
+        assert row["pr_title"] == "Fix bug"
+        assert row["is_draft"] == 0
+        assert row["pr_author_login"] == "author"
+        assert row["commits_count"] == 3
+        assert row["is_merged"] == 0
 
-    def test_issues_event(self) -> None:
-        payload = {
-            "action": "opened",
-            "issue": {
-                "number": 10,
-                "title": "Bug report",
-                "state": "open",
-                "labels": [{"name": "bug"}, {"name": "help wanted"}],
-            },
-        }
-        result = normalize_payload("IssuesEvent", payload)
-        assert result["action"] == "opened"
-        assert result["number"] == 10
-        assert result["title"] == "Bug report"
-        assert result["state"] == "open"
-        assert result["labels"] == ["bug", "help wanted"]
+    def test_missing_optional_fields(self) -> None:
+        event = _make_event(event_type="PullRequestEvent", payload={
+            "action": "closed",
+        })
+        result, _ = transform_events([event])
+        row = result["dl_pull_request_events"][0]
+        assert row["pr_title"] is None
+        assert row["pr_number"] is None
+        assert row["is_draft"] is None
 
-    def test_issue_comment_event(self) -> None:
-        payload = {
-            "action": "created",
-            "issue": {"number": 10},
-            "comment": {"id": 555},
-        }
-        result = normalize_payload("IssueCommentEvent", payload)
-        assert result["action"] == "created"
-        assert result["issue_number"] == 10
-        assert result["comment_id"] == 555
+
+# ── GollumEvent 변환 테스트 ──────────────────────────────
+
+class TestGollumEventConversion:
+    """GollumEvent → dl_gollum_events 변환 테스트."""
+
+    def test_multiple_pages(self) -> None:
+        event = _make_event(event_type="GollumEvent", payload={
+            "pages": [
+                {"page_name": "Home", "title": "Home", "action": "created", "sha": "s1", "html_url": "u1"},
+                {"page_name": "API", "title": "API", "action": "edited", "sha": "s2", "html_url": "u2"},
+            ],
+        })
+        result, _ = transform_events([event])
+        rows = result["dl_gollum_events"]
+        assert len(rows) == 2
+        assert rows[0]["is_page_created"] == 1
+        assert rows[1]["is_page_edited"] == 1
+
+    def test_empty_pages_header_row(self) -> None:
+        event = _make_event(event_type="GollumEvent", payload={"pages": []})
+        result, _ = transform_events([event])
+        rows = result["dl_gollum_events"]
+        assert len(rows) == 1
+        assert rows[0]["page_name"] == "__empty__#0"
+
+    def test_null_page_name_sentinel(self) -> None:
+        event = _make_event(event_type="GollumEvent", payload={
+            "pages": [
+                {"page_name": None, "action": "created"},
+                {"page_name": None, "action": "edited"},
+            ],
+        })
+        result, _ = transform_events([event])
+        rows = result["dl_gollum_events"]
+        assert rows[0]["page_name"] == "__no_page__#0"
+        assert rows[1]["page_name"] == "__no_page__#1"
+
+
+# ── 기타 이벤트 타입 변환 테스트 ─────────────────────────
+
+class TestOtherEventConversions:
+    """나머지 이벤트 타입 변환 테스트."""
 
     def test_watch_event(self) -> None:
-        payload = {"action": "started"}
-        result = normalize_payload("WatchEvent", payload)
-        assert result == {"action": "started"}
+        event = _make_event(event_type="WatchEvent")
+        result, _ = transform_events([event])
+        rows = result["dl_watch_events"]
+        assert len(rows) == 1
+        assert rows[0]["event_id"] == "1"
 
     def test_fork_event(self) -> None:
-        payload = {"forkee": {"full_name": "user/forked-repo"}}
-        result = normalize_payload("ForkEvent", payload)
-        assert result["forkee_full_name"] == "user/forked-repo"
+        event = _make_event(event_type="ForkEvent", payload={
+            "forkee": {
+                "id": 999,
+                "full_name": "user/fork",
+                "html_url": "https://github.com/user/fork",
+                "owner": {"login": "user", "id": 5},
+                "description": "A fork",
+                "private": False,
+                "default_branch": "main",
+            },
+        })
+        result, _ = transform_events([event])
+        row = result["dl_fork_events"][0]
+        assert row["forkee_full_name"] == "user/fork"
+        assert row["is_fork_private"] == 0
+        assert row["forkee_owner_login"] == "user"
 
-    def test_create_event(self) -> None:
-        payload = {
-            "ref": "main",
-            "ref_type": "branch",
-            "master_branch": "main",
-        }
-        result = normalize_payload("CreateEvent", payload)
-        assert result["ref"] == "main"
-        assert result["ref_type"] == "branch"
-        assert result["master_branch"] == "main"
-
-    def test_delete_event(self) -> None:
-        payload = {
+    def test_create_event_branch(self) -> None:
+        event = _make_event(event_type="CreateEvent", payload={
             "ref": "feature-branch",
             "ref_type": "branch",
-        }
-        result = normalize_payload("DeleteEvent", payload)
-        assert result["ref"] == "feature-branch"
-        assert result["ref_type"] == "branch"
+            "master_branch": "main",
+        })
+        result, _ = transform_events([event])
+        row = result["dl_create_events"][0]
+        assert row["is_branch_creation"] == 1
+        assert row["is_repo_creation"] == 0
+        assert row["is_tag_creation"] == 0
+
+    def test_delete_event_tag(self) -> None:
+        event = _make_event(event_type="DeleteEvent", payload={
+            "ref": "v1.0",
+            "ref_type": "tag",
+        })
+        result, _ = transform_events([event])
+        row = result["dl_delete_events"][0]
+        assert row["is_tag_deletion"] == 1
+        assert row["is_branch_deletion"] == 0
 
     def test_release_event(self) -> None:
-        payload = {
+        event = _make_event(event_type="ReleaseEvent", payload={
             "action": "published",
             "release": {
                 "tag_name": "v1.0",
                 "name": "Release 1.0",
                 "prerelease": False,
+                "html_url": "https://github.com/org/repo/releases/v1.0",
+                "author": {"login": "releaser"},
             },
-        }
-        result = normalize_payload("ReleaseEvent", payload)
-        assert result["action"] == "published"
-        assert result["tag_name"] == "v1.0"
-        assert result["name"] == "Release 1.0"
-        assert result["prerelease"] is False
-
-    def test_review_event(self) -> None:
-        payload = {
-            "action": "submitted",
-            "review": {"state": "approved"},
-            "pull_request": {"number": 42},
-        }
-        result = normalize_payload("PullRequestReviewEvent", payload)
-        assert result["action"] == "submitted"
-        assert result["review_state"] == "approved"
-        assert result["pull_request_number"] == 42
-
-    def test_review_comment_event(self) -> None:
-        payload = {
-            "action": "created",
-            "comment": {"id": 789},
-            "pull_request": {"number": 42},
-        }
-        result = normalize_payload("PullRequestReviewCommentEvent", payload)
-        assert result["action"] == "created"
-        assert result["comment_id"] == 789
-        assert result["pull_request_number"] == 42
+        })
+        result, _ = transform_events([event])
+        row = result["dl_release_events"][0]
+        assert row["release_action"] == "published"
+        assert row["tag_name"] == "v1.0"
+        assert row["is_prerelease"] == 0
+        assert row["release_author_login"] == "releaser"
 
     def test_member_event(self) -> None:
-        payload = {
+        event = _make_event(event_type="MemberEvent", payload={
             "action": "added",
-            "member": {"login": "newuser"},
-        }
-        result = normalize_payload("MemberEvent", payload)
-        assert result["action"] == "added"
-        assert result["member_login"] == "newuser"
+            "member": {"login": "newuser", "id": 50, "html_url": "https://github.com/newuser"},
+        })
+        result, _ = transform_events([event])
+        row = result["dl_member_events"][0]
+        assert row["is_member_added"] == 1
+        assert row["is_member_removed"] == 0
+        assert row["member_login"] == "newuser"
 
     def test_public_event(self) -> None:
-        payload = {}
-        result = normalize_payload("PublicEvent", payload)
-        assert result == {}
+        event = _make_event(event_type="PublicEvent")
+        result, _ = transform_events([event])
+        rows = result["dl_public_events"]
+        assert len(rows) == 1
+        assert rows[0]["event_id"] == "1"
 
-    def test_gollum_event(self) -> None:
-        payload = {
-            "pages": [
-                {"action": "created", "title": "Home"},
-                {"action": "edited", "title": "API"},
-            ],
-        }
-        result = normalize_payload("GollumEvent", payload)
-        assert len(result["pages"]) == 2
-        assert result["pages"][0]["action"] == "created"
-        assert result["pages"][0]["title"] == "Home"
-        assert result["pages"][1]["action"] == "edited"
-        assert result["pages"][1]["title"] == "API"
+    def test_issue_comment_event(self) -> None:
+        event = _make_event(event_type="IssueCommentEvent", payload={
+            "action": "created",
+            "issue": {
+                "number": 10,
+                "title": "Bug",
+                "state": "open",
+                "html_url": "https://github.com/org/repo/issues/10",
+                "user": {"login": "issuer", "id": 20},
+            },
+            "comment": {
+                "id": 555,
+                "html_url": "https://github.com/org/repo/issues/10#comment-555",
+                "body": "Comment text",
+                "user": {"login": "commenter", "id": 30},
+            },
+        })
+        result, _ = transform_events([event])
+        row = result["dl_issue_comment_events"][0]
+        assert row["ic_action"] == "created"
+        assert row["comment_id"] == 555
+        assert row["commenter_login"] == "commenter"
 
-    def test_unknown_type_fallback(self) -> None:
-        payload = {
-            "long_string": "x" * 300,
-            "number": 42,
-            "nested_dict": {"key": "value"},
-            "list_items": [1, 2, 3],
-        }
-        result = normalize_payload("SomeNewEvent", payload)
-        assert len(result["long_string"]) == 200
-        assert result["number"] == 42
-        assert result["nested_dict"] == "<dict>"
-        assert result["list_items"] == "<list[3]>"
+    def test_issues_event(self) -> None:
+        event = _make_event(event_type="IssuesEvent", payload={
+            "action": "opened",
+            "issue": {
+                "number": 10,
+                "title": "Bug report",
+                "body": "Details",
+                "state": "open",
+                "html_url": "https://github.com/org/repo/issues/10",
+                "user": {"login": "reporter", "id": 15},
+            },
+        })
+        result, _ = transform_events([event])
+        row = result["dl_issues_events"][0]
+        assert row["issue_action"] == "opened"
+        assert row["issue_title"] == "Bug report"
+        assert row["issue_author_login"] == "reporter"
 
-    def test_missing_nested_field(self) -> None:
-        payload = {}
-        result = normalize_payload("PullRequestEvent", payload)
-        assert result["action"] is None
-        assert result["number"] is None
-        assert result["title"] is None
+    def test_pr_review_event(self) -> None:
+        event = _make_event(event_type="PullRequestReviewEvent", payload={
+            "action": "submitted",
+            "review": {
+                "state": "approved",
+                "user": {"login": "reviewer", "id": 77},
+                "body": "LGTM",
+                "html_url": "https://github.com/org/repo/pull/1#review-1",
+                "commit_id": "abc",
+                "submitted_at": "2024-01-15T10:00:00Z",
+            },
+            "pull_request": {
+                "number": 1,
+                "title": "PR Title",
+                "html_url": "https://github.com/org/repo/pull/1",
+                "user": {"login": "author"},
+            },
+        })
+        result, _ = transform_events([event])
+        row = result["dl_pull_request_review_events"][0]
+        assert row["review_state"] == "approved"
+        assert row["reviewer_login"] == "reviewer"
+        assert row["pr_number"] == 1
+        assert row["review_submitted_at_utc"] == "2024-01-15T10:00:00Z"
+        assert row["review_submitted_at_kst"] is not None
 
-
-class TestToEventRow:
-    """GitHubEvent → EventRow 변환 테스트."""
-
-    def test_basic_conversion(self) -> None:
-        event = _make_event(
-            event_id="12345",
-            event_type="PushEvent",
-            org_login="pseudolab",
-            repo_name="pseudolab/test-repo",
-            payload={"size": 1},
-            created_at="2024-01-15T10:30:00Z",
-        )
-        row = to_event_row(event, batch_date="2024-01-15")
-        assert row["id"] == "12345"
-        assert row["type"] == "PushEvent"
-        assert row["actor_login"] == "testuser"
-        assert row["repo_name"] == "pseudolab/test-repo"
-        assert row["org_name"] == "pseudolab"
-        assert row["batch_date"] == "2024-01-15"
-        assert "size" in json.loads(row["payload"])
-
-    def test_org_none(self) -> None:
-        event = _make_event(org_login=None)
-        row = to_event_row(event, batch_date="2024-01-15")
-        assert row["org_name"] is None
-
-    def test_created_at_format(self) -> None:
-        event = _make_event(created_at="2024-01-15T10:30:00Z")
-        row = to_event_row(event, batch_date="2024-01-15")
-        assert "T" in row["created_at"]
-        assert row["created_at"].startswith("2024-01-15")
-
-    def test_payload_is_json_string(self) -> None:
-        event = _make_event(payload={"size": 1})
-        row = to_event_row(event, batch_date="2024-01-15")
-        parsed = json.loads(row["payload"])
-        assert isinstance(parsed, dict)
-        assert "size" in parsed
-
-
-class TestDeduplicate:
-    """중복 제거 로직 테스트."""
-
-    def test_no_duplicates(self) -> None:
-        rows = [
-            _make_row(id="1"),
-            _make_row(id="2"),
-            _make_row(id="3"),
-        ]
-        result, dup_count = deduplicate(rows)
-        assert len(result) == 3
-        assert dup_count == 0
-
-    def test_removes_duplicates(self) -> None:
-        rows = [
-            _make_row(id="1"),
-            _make_row(id="2"),
-            _make_row(id="1"),
-            _make_row(id="3"),
-            _make_row(id="2"),
-        ]
-        result, dup_count = deduplicate(rows)
-        assert len(result) == 3
-        assert dup_count == 2
-        assert result[0]["id"] == "1"
-        assert result[1]["id"] == "2"
-        assert result[2]["id"] == "3"
-
-    def test_empty_input(self) -> None:
-        result, dup_count = deduplicate([])
-        assert result == []
-        assert dup_count == 0
+    def test_pr_review_comment_event(self) -> None:
+        event = _make_event(event_type="PullRequestReviewCommentEvent", payload={
+            "action": "created",
+            "comment": {
+                "id": 100,
+                "html_url": "https://github.com/org/repo/pull/1#comment-100",
+                "body": "Fix this",
+                "diff_hunk": "@@ -1,3 +1,3 @@",
+                "path": "src/main.py",
+                "commit_id": "abc",
+                "pull_request_review_id": 200,
+                "user": {"login": "reviewer", "id": 77},
+            },
+            "pull_request": {
+                "number": 1,
+                "title": "PR",
+                "html_url": "https://github.com/org/repo/pull/1",
+                "state": "open",
+            },
+        })
+        result, _ = transform_events([event])
+        row = result["dl_pull_request_review_comment_events"][0]
+        assert row["pr_review_comment_action"] == "created"
+        assert row["review_comment_id"] == 100
+        assert row["file_path"] == "src/main.py"
 
 
-class TestValidateRow:
-    """행 유효성 검사 테스트."""
-
-    def test_valid_row(self) -> None:
-        row = _make_row()
-        is_valid, error = validate_row(row)
-        assert is_valid is True
-        assert error is None
-
-    def test_empty_id(self) -> None:
-        row = _make_row(id="")
-        is_valid, error = validate_row(row)
-        assert is_valid is False
-        assert error is not None
-        assert "id" in error
-
-    def test_invalid_payload_json(self) -> None:
-        row = _make_row(payload="not-json{")
-        is_valid, error = validate_row(row)
-        assert is_valid is False
-        assert error is not None
-        assert "payload" in error
-
-    def test_invalid_created_at_format(self) -> None:
-        row = _make_row(created_at="2024/01/15")
-        is_valid, error = validate_row(row)
-        assert is_valid is False
-        assert error is not None
-        assert "created_at" in error
-
-    def test_invalid_batch_date_format(self) -> None:
-        row = _make_row(batch_date="20240115")
-        is_valid, error = validate_row(row)
-        assert is_valid is False
-        assert error is not None
-        assert "batch_date" in error
-
+# ── transform_events 통합 테스트 ─────────────────────────
 
 class TestTransformEvents:
     """전체 변환 파이프라인 테스트."""
 
-    def test_full_pipeline(self) -> None:
+    def test_returns_dict_by_table(self) -> None:
         events = [
-            _make_event(event_id="1", event_type="PushEvent"),
-            _make_event(event_id="2", event_type="IssuesEvent"),
-            _make_event(event_id="3", event_type="WatchEvent"),
+            _make_event(event_id="1", event_type="PushEvent", payload={"commits": [{"sha": "a"}]}),
+            _make_event(event_id="2", event_type="IssuesEvent", payload={"action": "opened", "issue": {}}),
         ]
-        rows, stats = transform_events(events, batch_date="2024-01-15")
-        assert len(rows) == 3
-        assert stats.total_input == 3
+        result, stats = transform_events(events)
+        assert isinstance(result, dict)
+        assert "dl_push_events" in result
+        assert "dl_issues_events" in result
+        assert stats.total_input == 2
+
+    def test_mixed_event_types(self) -> None:
+        events = [
+            _make_event(event_id="1", event_type="PushEvent", payload={"commits": [{"sha": "a"}]}),
+            _make_event(event_id="2", event_type="WatchEvent"),
+            _make_event(event_id="3", event_type="ForkEvent", payload={"forkee": {}}),
+        ]
+        result, stats = transform_events(events)
+        assert len(result) == 3
         assert stats.total_output == 3
 
-    def test_stats_input_type_counts(self) -> None:
+    def test_unknown_event_type_skipped(self) -> None:
         events = [
-            _make_event(event_id="1", event_type="PushEvent"),
-            _make_event(event_id="2", event_type="PushEvent"),
-            _make_event(event_id="3", event_type="IssuesEvent"),
+            _make_event(event_id="1", event_type="SomeNewEvent"),
+            _make_event(event_id="2", event_type="PushEvent", payload={"commits": [{"sha": "a"}]}),
         ]
-        _, stats = transform_events(events, batch_date="2024-01-15")
-        assert stats.input_type_counts["PushEvent"] == 2
-        assert stats.input_type_counts["IssuesEvent"] == 1
-
-    def test_stats_output_type_counts(self) -> None:
-        events = [
-            _make_event(event_id="1", event_type="PushEvent"),
-            _make_event(event_id="2", event_type="PushEvent"),
-            _make_event(event_id="3", event_type="IssuesEvent"),
-        ]
-        _, stats = transform_events(events, batch_date="2024-01-15")
-        assert stats.output_type_counts["PushEvent"] == 2
-        assert stats.output_type_counts["IssuesEvent"] == 1
-
-    def test_validation_error_skipped(self) -> None:
-        events = [
-            _make_event(event_id="1", event_type="PushEvent"),
-        ]
-        # Pass invalid batch_date to trigger validation errors
-        _, stats = transform_events(events, batch_date="not-a-date")
-        assert stats.validation_errors > 0
-        assert stats.total_output == 0
-
-    def test_duplicates_in_stats(self) -> None:
-        events = [
-            _make_event(event_id="1", event_type="PushEvent"),
-            _make_event(event_id="1", event_type="PushEvent"),
-        ]
-        _rows, stats = transform_events(events, batch_date="2024-01-15")
-        assert stats.duplicates_removed == 1
+        result, stats = transform_events(events)
+        assert "dl_push_events" in result
+        assert stats.skipped == 1
         assert stats.total_output == 1
 
+    def test_stats_accuracy(self) -> None:
+        events = [
+            _make_event(event_id="1", event_type="PushEvent", payload={
+                "commits": [{"sha": "a1"}, {"sha": "a2"}],
+            }),
+            _make_event(event_id="2", event_type="WatchEvent"),
+        ]
+        result, stats = transform_events(events)
+        assert stats.total_input == 2
+        # 2 push rows + 1 watch row = 3 total output rows
+        assert stats.total_output == 3
+        assert stats.output_table_counts["dl_push_events"] == 2
+        assert stats.output_table_counts["dl_watch_events"] == 1
+
+
+# ── validate_dl_row 테스트 ───────────────────────────────
+
+class TestValidateDlRow:
+    """DL Row 검증 테스트."""
+
+    def test_valid_row(self) -> None:
+        row = {
+            "event_id": "1",
+            "user_login": "user",
+            "repo_name": "org/repo",
+            "ts_kst": "2024-01-15T19:30:00+09:00",
+            "base_date": "2024-01-15",
+        }
+        is_valid, error = validate_dl_row(row, "dl_watch_events")
+        assert is_valid is True
+        assert error is None
+
+    def test_empty_event_id(self) -> None:
+        row = {
+            "event_id": "",
+            "user_login": "user",
+            "repo_name": "org/repo",
+            "ts_kst": "2024-01-15T19:30:00+09:00",
+            "base_date": "2024-01-15",
+        }
+        is_valid, error = validate_dl_row(row, "dl_watch_events")
+        assert is_valid is False
+        assert "event_id" in error  # type: ignore[operator]
+
+    def test_invalid_ts_kst_format(self) -> None:
+        row = {
+            "event_id": "1",
+            "user_login": "user",
+            "repo_name": "org/repo",
+            "ts_kst": "not-a-date",
+            "base_date": "2024-01-15",
+        }
+        is_valid, error = validate_dl_row(row, "dl_watch_events")
+        assert is_valid is False
+        assert "ts_kst" in error  # type: ignore[operator]
+
+
+# ── compute_daily_stats 테스트 ───────────────────────────
 
 class TestComputeDailyStats:
-    """일별 통계 집계 테스트."""
+    """DLRowsByTable 기반 일별 통계 테스트."""
 
-    def test_compute_daily_stats_basic(self) -> None:
-        rows = [
-            _make_row(
-                id="1",
-                type="PushEvent",
-                org_name="pseudolab",
-                repo_name="pseudolab/repo",
-                batch_date="2024-01-15",
-            ),
-            _make_row(
-                id="2",
-                type="PushEvent",
-                org_name="pseudolab",
-                repo_name="pseudolab/repo",
-                batch_date="2024-01-15",
-            ),
-        ]
-        stats = compute_daily_stats(rows)
+    def test_basic_count(self) -> None:
+        rows_by_table: DLRowsByTable = {
+            "dl_watch_events": [
+                {"event_id": "1", "base_date": "2024-01-15", "organization": "org", "repo_name": "org/repo"},
+                {"event_id": "2", "base_date": "2024-01-15", "organization": "org", "repo_name": "org/repo"},
+            ],
+        }
+        stats = compute_daily_stats(rows_by_table)
         assert len(stats) == 1
-        assert stats[0]["date"] == "2024-01-15"
-        assert stats[0]["org_name"] == "pseudolab"
-        assert stats[0]["repo_name"] == "pseudolab/repo"
-        assert stats[0]["event_type"] == "PushEvent"
+        assert stats[0]["event_type"] == "WatchEvent"
         assert stats[0]["count"] == 2
 
-    def test_compute_daily_stats_null_org(self) -> None:
-        rows = [
-            _make_row(
-                id="1",
-                type="PushEvent",
-                org_name=None,
-                repo_name="user/repo",
-                batch_date="2024-01-15",
-            ),
-        ]
-        stats = compute_daily_stats(rows)
+    def test_non_exploded_table_deduplicates_event_id(self) -> None:
+        """비-펼침 테이블도 event_id(PK) 기준 deduplicate."""
+        rows_by_table: DLRowsByTable = {
+            "dl_watch_events": [
+                {"event_id": "1", "base_date": "2024-01-15", "organization": "org", "repo_name": "org/repo"},
+                {"event_id": "1", "base_date": "2024-01-15", "organization": "org", "repo_name": "org/repo"},
+            ],
+        }
+        stats = compute_daily_stats(rows_by_table)
         assert len(stats) == 1
+        assert stats[0]["event_type"] == "WatchEvent"
+        assert stats[0]["count"] == 1
+
+    def test_push_events_count_by_event_id(self) -> None:
+        """커밋 펼침 시 event_id 기준 count."""
+        rows_by_table: DLRowsByTable = {
+            "dl_push_events": [
+                {"event_id": "1", "base_date": "2024-01-15", "organization": "org", "repo_name": "org/repo", "commit_sha": "a1"},
+                {"event_id": "1", "base_date": "2024-01-15", "organization": "org", "repo_name": "org/repo", "commit_sha": "a2"},
+                {"event_id": "2", "base_date": "2024-01-15", "organization": "org", "repo_name": "org/repo", "commit_sha": "b1"},
+            ],
+        }
+        stats = compute_daily_stats(rows_by_table)
+        assert len(stats) == 1
+        assert stats[0]["event_type"] == "PushEvent"
+        assert stats[0]["count"] == 2  # 2 distinct event_ids, not 3 rows
+
+    def test_gollum_events_count_by_event_id(self) -> None:
+        """페이지 펼침 시 event_id 기준 count."""
+        rows_by_table: DLRowsByTable = {
+            "dl_gollum_events": [
+                {"event_id": "1", "base_date": "2024-01-15", "organization": "org", "repo_name": "org/repo"},
+                {"event_id": "1", "base_date": "2024-01-15", "organization": "org", "repo_name": "org/repo"},
+            ],
+        }
+        stats = compute_daily_stats(rows_by_table)
+        assert len(stats) == 1
+        assert stats[0]["count"] == 1  # 1 distinct event_id
+
+    def test_null_org(self) -> None:
+        rows_by_table: DLRowsByTable = {
+            "dl_watch_events": [
+                {"event_id": "1", "base_date": "2024-01-15", "organization": None, "repo_name": "user/repo"},
+            ],
+        }
+        stats = compute_daily_stats(rows_by_table)
         assert stats[0]["org_name"] == ""
-        assert stats[0]["count"] == 1
 
-    def test_compute_daily_stats_multiple_types(self) -> None:
-        rows = [
-            _make_row(
-                id="1",
-                type="PushEvent",
-                org_name="pseudolab",
-                repo_name="pseudolab/repo",
-                batch_date="2024-01-15",
-            ),
-            _make_row(
-                id="2",
-                type="IssuesEvent",
-                org_name="pseudolab",
-                repo_name="pseudolab/repo",
-                batch_date="2024-01-15",
-            ),
-            _make_row(
-                id="3",
-                type="PushEvent",
-                org_name="pseudolab",
-                repo_name="pseudolab/repo",
-                batch_date="2024-01-15",
-            ),
-        ]
-        stats = compute_daily_stats(rows)
-        assert len(stats) == 2
-        # sorted by key: (date, org, repo, type) so IssuesEvent < PushEvent
-        assert stats[0]["event_type"] == "IssuesEvent"
-        assert stats[0]["count"] == 1
-        assert stats[1]["event_type"] == "PushEvent"
-        assert stats[1]["count"] == 2
-
-    def test_compute_daily_stats_empty(self) -> None:
-        stats = compute_daily_stats([])
+    def test_empty_input(self) -> None:
+        stats = compute_daily_stats({})
         assert stats == []
+
+    def test_multiple_tables(self) -> None:
+        rows_by_table: DLRowsByTable = {
+            "dl_watch_events": [
+                {"event_id": "1", "base_date": "2024-01-15", "organization": "org", "repo_name": "org/repo"},
+            ],
+            "dl_issues_events": [
+                {"event_id": "2", "base_date": "2024-01-15", "organization": "org", "repo_name": "org/repo"},
+            ],
+        }
+        stats = compute_daily_stats(rows_by_table)
+        assert len(stats) == 2
+        types = {s["event_type"] for s in stats}
+        assert types == {"WatchEvent", "IssuesEvent"}
