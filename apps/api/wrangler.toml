@@ -19,6 +19,7 @@ bucket_name = "github-archive-raw"
 binding = "DB"
 database_name = "pseudolab-main"
 database_id = "e7f4cab0-3293-4942-988f-38d9e97e14b2"
+migrations_dir = "../../domains/catalog/storage/migrations"
 
 # =============================================================================
 # KV Namespace 바인딩
