@@ -1,0 +1,48 @@
+# 통합 Airflow Standalone (단일 컨테이너)
+# 사용법:
+#   docker compose up -d --build    # 빌드 + 실행
+#   docker compose logs -f          # 로그 확인
+#   docker compose down             # 종료
+#
+# 초기 admin 비밀번호는 로그에 출력됩니다:
+#   docker compose logs airflow | grep password
+
+services:
+  airflow:
+    build:
+      context: ../..
+      dockerfile: infrastructure/airflow/Dockerfile
+    container_name: airflow-pseudolab
+    ports:
+      - "30022:8080"
+    volumes:
+      - airflow-db:/opt/airflow/db
+      # DAG (서브디렉토리로 분리)
+      - ../../domains/github/ingestion/dags:/opt/airflow/dags/github
+      - ../../domains/discord/ingestion/dags:/opt/airflow/dags/discord
+      # 도메인별 데이터 + 설정
+      - ../../domains/github/ingestion/data:/opt/airflow/domains/github/ingestion/data
+      - ../../domains/github/ingestion/config.yaml:/opt/airflow/domains/github/ingestion/config.yaml:ro
+      - ../../domains/discord/ingestion/data:/opt/airflow/domains/discord/ingestion/data
+      - ../../domains/discord/ingestion/config.yaml:/opt/airflow/domains/discord/ingestion/config.yaml:ro
+    env_file:
+      - .env
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "sqlite:////opt/airflow/db/airflow.db"
+      # 스케줄러 튜닝: queued 체류 시간 단축
+      AIRFLOW__SCHEDULER__SCHEDULER_HEARTBEAT_SEC: "5"
+      AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "10"
+      AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
+      AIRFLOW__SCHEDULER__SCHEDULING_DELAY: "0"
+      # 도메인 루트 경로 (DAG에서 참조)
+      GITHUB_INGESTION_ROOT: /opt/airflow/domains/github/ingestion
+      DISCORD_INGESTION_ROOT: /opt/airflow/domains/discord/ingestion
+    command: standalone
+    restart: unless-stopped
+
+volumes:
+  airflow-db:
+    name: ingestion_airflow-db   # 기존 볼륨 재사용 (backfill 이력 보존)
+    external: true

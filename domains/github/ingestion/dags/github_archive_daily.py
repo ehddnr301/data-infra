@@ -19,7 +19,8 @@ from airflow.sdk import dag, task
 
 
 # ─── 상수 ───────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parent.parent  # domains/github/ingestion/
+_domain_root = os.environ.get("GITHUB_INGESTION_ROOT")
+PROJECT_ROOT = Path(_domain_root) if _domain_root else Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
