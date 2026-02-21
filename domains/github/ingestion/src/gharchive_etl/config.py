@@ -39,6 +39,18 @@ class D1Config(BaseModel):
     api_token: str = ""
 
 
+class GitHubApiConfig(BaseModel):
+    """GitHub REST API 설정."""
+
+    token_env_var: str = "GITHUB_TOKEN"
+    base_url: str = "https://api.github.com"
+    rate_limit_buffer: int = 100
+    max_retries: int = 3
+    backoff_factor: float = 2.0
+    request_timeout_sec: int = 30
+    skip_existing: bool = True
+
+
 class AppConfig(BaseModel):
     """애플리케이션 전체 설정."""
 
@@ -49,6 +61,7 @@ class AppConfig(BaseModel):
     http: HttpConfig = Field(default_factory=HttpConfig)
     r2: R2Config = Field(default_factory=R2Config)
     d1: D1Config = Field(default_factory=D1Config)
+    github_api: GitHubApiConfig = Field(default_factory=GitHubApiConfig)
 
     @field_validator("target_orgs")
     @classmethod

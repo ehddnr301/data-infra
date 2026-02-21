@@ -4,7 +4,7 @@
 
 Task 흐름:
   fetch → validate → [upload_r2, upload_d1]
-  upload_d1 → verify_aggregation → quality_check → daily_summary → cleanup
+  upload_d1 → verify_aggregation → enrich_details → quality_check → daily_summary → cleanup
   upload_r2 → cleanup
 """
 
@@ -136,6 +136,20 @@ def github_archive_daily():
         ),
     )
 
+    # ── Task 5.5: enrich_details (GitHub API 상세 데이터 수집) ──
+    enrich_details = BashOperator(
+        task_id="enrich_details",
+        bash_command=(
+            "gharchive-etl enrich "
+            "--date {{ data_interval_start | ds }} "
+            "--priority all "
+            f"--config {CONFIG_PATH} "
+            "--json-log"
+        ),
+        retries=1,
+        retry_delay=pendulum.duration(minutes=5),
+    )
+
     # ── Task 6: quality_check (데이터 품질 검증) ──
     quality_check = BashOperator(
         task_id="quality_check",
@@ -199,7 +213,7 @@ def github_archive_daily():
     cleanup_task = cleanup()
 
     fetch >> validate_result >> [upload_r2, upload_d1]
-    upload_d1 >> verify_aggregation >> quality_check >> summary_task >> cleanup_task
+    upload_d1 >> verify_aggregation >> enrich_details >> quality_check >> summary_task >> cleanup_task
     upload_r2 >> cleanup_task
 
 

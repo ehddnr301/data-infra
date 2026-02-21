@@ -179,10 +179,12 @@ class TestUploadToR2:
             _make_event(event_id="3", repo_name="pseudolab/repo2"),
         ]
 
+    @patch("gharchive_etl.r2._find_wrangler", return_value="wrangler")
     @patch("gharchive_etl.r2.subprocess.run")
     def test_success(
         self,
         mock_run: MagicMock,
+        mock_find: MagicMock,
         r2_config: R2Config,
         sample_events: list[GitHubEvent],
     ) -> None:
@@ -200,10 +202,12 @@ class TestUploadToR2:
         assert result.bytes_total > 0
         assert result.dry_run is False
 
+    @patch("gharchive_etl.r2._find_wrangler", return_value="wrangler")
     @patch("gharchive_etl.r2.subprocess.run")
     def test_dry_run(
         self,
         mock_run: MagicMock,
+        mock_find: MagicMock,
         r2_config: R2Config,
         sample_events: list[GitHubEvent],
     ) -> None:
@@ -222,18 +226,19 @@ class TestUploadToR2:
         # dry_run에서는 subprocess.run이 호출되지 않아야 함
         mock_run.assert_not_called()
 
+    @patch("gharchive_etl.r2._find_wrangler", return_value="wrangler")
     @patch("gharchive_etl.r2.time.sleep")
     @patch("gharchive_etl.r2.subprocess.run")
     def test_retry(
         self,
         mock_run: MagicMock,
         mock_sleep: MagicMock,
+        mock_find: MagicMock,
         r2_config: R2Config,
     ) -> None:
         events = [_make_event(event_id="1", repo_name="org/repo")]
-        # wrangler --version 성공, 첫 put 실패, 두 번째 put 성공
+        # 첫 put 실패, 두 번째 put 성공
         mock_run.side_effect = [
-            subprocess.CompletedProcess(args=[], returncode=0),  # --version
             subprocess.CalledProcessError(1, "wrangler", stderr="temp error"),  # 1st put
             subprocess.CompletedProcess(args=[], returncode=0),  # 2nd put
         ]
@@ -244,18 +249,19 @@ class TestUploadToR2:
         assert result.errors == []
         mock_sleep.assert_called_once()
 
+    @patch("gharchive_etl.r2._find_wrangler", return_value="wrangler")
     @patch("gharchive_etl.r2.time.sleep")
     @patch("gharchive_etl.r2.subprocess.run")
     def test_max_retries_exceeded(
         self,
         mock_run: MagicMock,
         mock_sleep: MagicMock,
+        mock_find: MagicMock,
         r2_config: R2Config,
     ) -> None:
         events = [_make_event(event_id="1", repo_name="org/repo")]
-        # wrangler --version 성공, 모든 put 실패
+        # 모든 put 실패
         mock_run.side_effect = [
-            subprocess.CompletedProcess(args=[], returncode=0),  # --version
             subprocess.CalledProcessError(1, "wrangler", stderr="fail1"),
             subprocess.CalledProcessError(1, "wrangler", stderr="fail2"),
             subprocess.CalledProcessError(1, "wrangler", stderr="fail3"),
@@ -267,14 +273,13 @@ class TestUploadToR2:
         assert len(result.errors) == 1
         assert "fail3" in result.errors[0]
 
-    @patch("gharchive_etl.r2.subprocess.run")
+    @patch("gharchive_etl.r2._find_wrangler", side_effect=RuntimeError("wrangler CLI is not installed or not in PATH."))
     def test_wrangler_not_installed(
         self,
-        mock_run: MagicMock,
+        mock_find: MagicMock,
         r2_config: R2Config,
     ) -> None:
         events = [_make_event(event_id="1", repo_name="org/repo")]
-        mock_run.side_effect = FileNotFoundError("wrangler not found")
 
         with pytest.raises(RuntimeError, match="wrangler CLI is not installed"):
             upload_events_to_r2(events, "2024-01-15", r2_config)

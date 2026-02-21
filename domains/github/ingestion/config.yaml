@@ -36,3 +36,12 @@ r2:
 # D1 설정 (HTTP API)
 d1:
   database_id: ""
+
+# GitHub REST API 설정 (enrichment용)
+github_api:
+  token_env_var: "GITHUB_TOKEN"
+  rate_limit_buffer: 100
+  max_retries: 3
+  backoff_factor: 2.0
+  request_timeout_sec: 30
+  skip_existing: true

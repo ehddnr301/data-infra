@@ -116,3 +116,30 @@ class TestAppConfigValidation:
         assert config.http.max_retries == 3
         assert config.http.backoff_factor == 2.0
         assert config.http.max_concurrency == 4
+
+    def test_github_api_config_defaults(self) -> None:
+        config = AppConfig(target_orgs=["pseudolab"])
+        assert config.github_api.token_env_var == "GITHUB_TOKEN"
+        assert config.github_api.rate_limit_buffer == 100
+        assert config.github_api.max_retries == 3
+        assert config.github_api.backoff_factor == 2.0
+        assert config.github_api.request_timeout_sec == 30
+        assert config.github_api.skip_existing is True
+
+    def test_github_api_config_from_yaml(self, tmp_path: Path) -> None:
+        data: dict[str, Any] = {
+            "target_orgs": ["pseudolab"],
+            "github_api": {
+                "token_env_var": "MY_TOKEN",
+                "rate_limit_buffer": 50,
+                "max_retries": 5,
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(data), encoding="utf-8")
+        config = load_config(config_path)
+        assert config.github_api.token_env_var == "MY_TOKEN"
+        assert config.github_api.rate_limit_buffer == 50
+        assert config.github_api.max_retries == 5
+        # defaults preserved
+        assert config.github_api.skip_existing is True

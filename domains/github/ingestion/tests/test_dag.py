@@ -61,7 +61,8 @@ class TestDagIntegrity:
 
         expected_tasks = {
             "fetch", "validate", "upload_r2", "upload_d1",
-            "verify_aggregation", "quality_check", "daily_summary", "cleanup",
+            "verify_aggregation", "enrich_details", "quality_check",
+            "daily_summary", "cleanup",
         }
         assert expected_tasks.issubset(task_ids), (
             f"누락 Task: {expected_tasks - task_ids}"
@@ -142,7 +143,7 @@ class TestDagIntegrity:
         assert "check_usage" in task_ids, f"check_usage 태스크 없음. 존재 태스크: {task_ids}"
 
     def test_verify_quality_dependencies(self):
-        """upload_d1 → verify_aggregation → quality_check → daily_summary → cleanup 의존성."""
+        """upload_d1 → verify → enrich → quality → summary → cleanup 의존성."""
         from airflow.models import DagBag
 
         dagbag = DagBag(dag_folder=str(DAG_DIR), include_examples=False)
@@ -152,9 +153,13 @@ class TestDagIntegrity:
         verify = dag.get_task("verify_aggregation")
         assert "upload_d1" in [t.task_id for t in verify.upstream_list]
 
-        # verify_aggregation → quality_check
+        # verify_aggregation → enrich_details
+        enrich = dag.get_task("enrich_details")
+        assert "verify_aggregation" in [t.task_id for t in enrich.upstream_list]
+
+        # enrich_details → quality_check
         quality = dag.get_task("quality_check")
-        assert "verify_aggregation" in [t.task_id for t in quality.upstream_list]
+        assert "enrich_details" in [t.task_id for t in quality.upstream_list]
 
         # quality_check → daily_summary
         summary = dag.get_task("daily_summary")

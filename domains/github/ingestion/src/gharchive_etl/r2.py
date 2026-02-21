@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import logging
 import random
+import shutil
 import subprocess
 import tempfile
 import time
@@ -39,19 +40,44 @@ class R2UploadResult:
 
 # ── 내부 헬퍼 함수 ────────────────────────────────────────
 
+_wrangler_bin: str | None = None
+
+
+def _find_wrangler() -> str:
+    """wrangler 실행 경로를 탐색한다.
+
+    1. PATH에서 탐색 (shutil.which)
+    2. 프로젝트 루트의 node_modules/.bin/wrangler 탐색
+    """
+    global _wrangler_bin  # noqa: PLW0603
+    if _wrangler_bin is not None:
+        return _wrangler_bin
+
+    # 1) PATH에서 탐색
+    found = shutil.which("wrangler")
+    if found:
+        _wrangler_bin = found
+        return _wrangler_bin
+
+    # 2) 프로젝트 루트의 node_modules/.bin/ 탐색
+    #    config.py 기준: __file__.parents[2] = domains/github/ingestion
+    #    프로젝트 루트: parents[5] 또는 git root 방식
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "node_modules" / ".bin" / "wrangler"
+        if candidate.is_file():
+            _wrangler_bin = str(candidate)
+            return _wrangler_bin
+
+    raise RuntimeError(
+        "wrangler CLI is not installed or not in PATH. "
+        "Install with: npm install -g wrangler or pnpm add -D wrangler"
+    )
+
 
 def _check_wrangler_installed() -> None:
     """wrangler CLI 설치 여부를 확인한다."""
-    try:
-        subprocess.run(
-            ["wrangler", "--version"],
-            capture_output=True,
-            check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        raise RuntimeError(
-            "wrangler CLI is not installed or not in PATH. Install with: npm install -g wrangler"
-        ) from exc
+    _find_wrangler()
 
 
 def _extract_org_repo(event: GitHubEvent) -> tuple[str, str] | None:
@@ -124,11 +150,12 @@ def _wrangler_r2_put(
 
     실패 시 지수 백오프로 재시도한다.
     """
+    wrangler = _find_wrangler()
     for attempt in range(1, max_retries + 1):
         try:
             subprocess.run(
                 [
-                    "wrangler",
+                    wrangler,
                     "r2",
                     "object",
                     "put",

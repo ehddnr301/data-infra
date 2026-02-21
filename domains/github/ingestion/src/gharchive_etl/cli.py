@@ -587,5 +587,144 @@ def check_usage(
     click.echo(f"[check-usage] {len(metrics)} metrics checked (threshold: {threshold:.0%})")
 
 
+@main.command()
+@click.option(
+    "--priority",
+    type=click.Choice(["1", "2", "3", "all"]),
+    default="all",
+    help="수집 우선순위 (1=코드, 2=토론, 3=프로필/위키, all=전체)",
+)
+@click.option("--date", "single_date", default=None, help="특정 날짜의 이벤트만 enrichment (예: 2024-01-15)")
+@click.option("--dry-run", is_flag=True, default=False, help="실제 API 호출/업로드 없이 수집 대상만 확인")
+@click.option(
+    "--config",
+    "config_path",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="설정 파일 경로",
+)
+@click.option("--json-log/--no-json-log", default=True, help="JSON 로그 포맷 (기본: 활성)")
+def enrich(
+    priority: str,
+    single_date: str | None,
+    dry_run: bool,
+    config_path: Path | None,
+    json_log: bool,
+) -> None:
+    """GitHub API를 호출하여 DL 이벤트의 상세 데이터를 수집하고 R2에 저장합니다.
+
+    기존 DL 테이블의 이벤트를 기반으로 커밋 diff, PR 파일 목록,
+    이슈/PR 댓글 쓰레드, 리뷰 인라인 코멘트, 유저 프로필, 위키 본문을
+    GitHub REST API로 수집하여 R2에 JSON으로 아카이브합니다.
+
+    사용 예:\n
+        gharchive-etl enrich --priority all\n
+        gharchive-etl enrich --date 2024-01-15\n
+        gharchive-etl enrich --priority 1\n
+        gharchive-etl enrich --dry-run
+    """
+    import os
+    import time as _time
+
+    from gharchive_etl.enrichment import (
+        EnrichmentProgress,
+        enrich_priority_1,
+        enrich_priority_2,
+        enrich_priority_3,
+    )
+    from gharchive_etl.github_api import GitHubApiClient
+
+    setup_logging(json_format=json_log)
+
+    # GITHUB_TOKEN 미설정 시 graceful skip
+    config = load_config(config_path)
+    token_var = config.github_api.token_env_var
+    if not os.environ.get(token_var):
+        click.echo(f"[enrich] {token_var} 미설정 — enrichment 스킵")
+        return
+
+    # wrangler 설치 확인 (dry-run이 아닌 경우)
+    if not dry_run:
+        try:
+            _check_wrangler_installed()
+        except RuntimeError as exc:
+            click.echo(f"Wrangler error: {exc}", err=True)
+            sys.exit(1)
+
+    # GitHubApiClient 생성
+    try:
+        api = GitHubApiClient(config.github_api)
+    except RuntimeError as exc:
+        click.echo(f"GitHub API error: {exc}", err=True)
+        sys.exit(1)
+
+    def _on_progress(p: EnrichmentProgress) -> None:
+        click.echo(
+            f"  [{p.category}] {p.completed + p.skipped + p.failed}/{p.total} "
+            f"(done={p.completed}, skip={p.skipped}, fail={p.failed})"
+        )
+        if p.errors:
+            for err in p.errors[-5:]:  # 최근 5개 에러만 표시
+                click.echo(f"    ERR: {err}", err=True)
+
+    start_time = _time.time()
+    all_progress: list[EnrichmentProgress] = []
+    priorities = ["1", "2", "3"] if priority == "all" else [priority]
+
+    try:
+        for p in priorities:
+            if p == "1":
+                click.echo("[enrich] Priority 1: 코드 변경 상세")
+                results = enrich_priority_1(
+                    api, config, base_date=single_date, dry_run=dry_run, on_progress=_on_progress
+                )
+                all_progress.extend(results)
+            elif p == "2":
+                click.echo("[enrich] Priority 2: 토론 맥락")
+                results = enrich_priority_2(
+                    api, config, base_date=single_date, dry_run=dry_run, on_progress=_on_progress
+                )
+                all_progress.extend(results)
+            elif p == "3":
+                click.echo("[enrich] Priority 3: 프로필 & 위키")
+                results = enrich_priority_3(
+                    api, config, dry_run=dry_run, on_progress=_on_progress
+                )
+                all_progress.extend(results)
+
+            rate = api.rate_remaining
+            if rate is not None:
+                click.echo(f"[enrich] Priority {p} 완료 | rate limit remaining: {rate:,}")
+    finally:
+        api.close()
+
+    # 전체 요약
+    elapsed = _time.time() - start_time
+    total_items = sum(p.total for p in all_progress)
+    total_completed = sum(p.completed for p in all_progress)
+    total_skipped = sum(p.skipped for p in all_progress)
+    total_failed = sum(p.failed for p in all_progress)
+
+    click.echo(f"\n[enrich] 전체 요약:")
+    for p in all_progress:
+        click.echo(
+            f"  P{p.priority} {p.category}: "
+            f"{p.total}건 중 {p.completed} 수집, {p.skipped} skip, {p.failed} 실패"
+        )
+
+    minutes = int(elapsed // 60)
+    seconds = int(elapsed % 60)
+    click.echo(
+        f"  총 {total_items}건 | {total_completed} 수집, {total_skipped} skip, "
+        f"{total_failed} 실패 | 소요 시간: {minutes}m {seconds}s"
+    )
+
+    if dry_run:
+        click.echo("  (DRY RUN)")
+
+    if total_failed > 0 and not dry_run:
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     main()
