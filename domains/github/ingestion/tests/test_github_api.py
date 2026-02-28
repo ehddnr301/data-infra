@@ -373,3 +373,128 @@ class TestParseNextLink:
 
     def test_no_link_header(self) -> None:
         assert GitHubApiClient._parse_next_link({}) is None
+
+
+class TestRequestWith304:
+    """304 Not Modified 및 extra_headers 테스트."""
+
+    def test_304_returns_none_data(self, api_client: GitHubApiClient, httpx_mock: HTTPXMock) -> None:
+        """304 응답 시 data=None 반환."""
+        httpx_mock.add_response(
+            url="https://api.github.com/orgs/Pseudo-Lab/events?per_page=100",
+            status_code=304,
+            headers={"X-RateLimit-Remaining": "4999", "X-RateLimit-Reset": "9999999999"},
+        )
+        result = api_client.fetch_org_events("Pseudo-Lab", etag='W/"abc123"')
+        assert result.status_code == 304
+        assert result.data is None
+
+    def test_extra_headers_passed(self, api_client: GitHubApiClient, httpx_mock: HTTPXMock) -> None:
+        """extra_headers가 요청에 전달되는지 확인."""
+        httpx_mock.add_response(
+            url="https://api.github.com/orgs/Pseudo-Lab/events?per_page=100",
+            json=[],
+            headers={"X-RateLimit-Remaining": "4999", "X-RateLimit-Reset": "9999999999"},
+        )
+        result = api_client.fetch_org_events("Pseudo-Lab", etag='W/"test-etag"')
+        assert result.status_code == 200
+        # Verify the If-None-Match header was sent
+        request = httpx_mock.get_requests()[0]
+        assert request.headers.get("if-none-match") == 'W/"test-etag"'
+
+
+class TestFetchOrgEvents:
+    """org events 수집 테스트."""
+
+    def test_basic_fetch(self, api_client: GitHubApiClient, httpx_mock: HTTPXMock) -> None:
+        """기본 org events 수집."""
+        events = [{"id": "1", "type": "PushEvent"}, {"id": "2", "type": "WatchEvent"}]
+        httpx_mock.add_response(
+            url="https://api.github.com/orgs/Pseudo-Lab/events?per_page=100",
+            json=events,
+            headers={"X-RateLimit-Remaining": "4999", "X-RateLimit-Reset": "9999999999"},
+        )
+        result = api_client.fetch_org_events("Pseudo-Lab")
+        assert result.status_code == 200
+        assert len(result.data) == 2
+
+    def test_etag_not_modified_304(self, api_client: GitHubApiClient, httpx_mock: HTTPXMock) -> None:
+        """ETag 기반 304 Not Modified."""
+        httpx_mock.add_response(
+            url="https://api.github.com/orgs/Pseudo-Lab/events?per_page=100",
+            status_code=304,
+            headers={"X-RateLimit-Remaining": "4999", "X-RateLimit-Reset": "9999999999"},
+        )
+        result = api_client.fetch_org_events("Pseudo-Lab", etag='W/"etag123"')
+        assert result.status_code == 304
+        assert result.data is None
+
+    def test_pagination_multiple_pages(self, api_client: GitHubApiClient, httpx_mock: HTTPXMock) -> None:
+        """페이지네이션으로 여러 페이지 수집."""
+        page1 = [{"id": str(i)} for i in range(100)]
+        page2 = [{"id": str(i)} for i in range(100, 150)]
+        httpx_mock.add_response(
+            url="https://api.github.com/orgs/Pseudo-Lab/events?per_page=100",
+            json=page1,
+            headers={
+                "X-RateLimit-Remaining": "4998",
+                "X-RateLimit-Reset": "9999999999",
+                "Link": '<https://api.github.com/orgs/Pseudo-Lab/events?per_page=100&page=2>; rel="next"',
+            },
+        )
+        httpx_mock.add_response(
+            url="https://api.github.com/orgs/Pseudo-Lab/events?per_page=100&page=2",
+            json=page2,
+            headers={"X-RateLimit-Remaining": "4997", "X-RateLimit-Reset": "9999999999"},
+        )
+        result = api_client.fetch_org_events("Pseudo-Lab", max_pages=3)
+        assert result.status_code == 200
+        assert len(result.data) == 150
+
+    @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+    def test_max_pages_limit(self, api_client: GitHubApiClient, httpx_mock: HTTPXMock) -> None:
+        """max_pages 제한으로 더 이상 수집하지 않음."""
+        for i in range(3):
+            page = [{"id": str(i * 100 + j)} for j in range(100)]
+            headers = {
+                "X-RateLimit-Remaining": str(4999 - i),
+                "X-RateLimit-Reset": "9999999999",
+            }
+            if i < 2:  # pages 0,1 have next links
+                headers["Link"] = f'<https://api.github.com/orgs/Pseudo-Lab/events?per_page=100&page={i+2}>; rel="next"'
+            url = "https://api.github.com/orgs/Pseudo-Lab/events?per_page=100" if i == 0 else f"https://api.github.com/orgs/Pseudo-Lab/events?per_page=100&page={i+1}"
+            httpx_mock.add_response(url=url, json=page, headers=headers)
+
+        result = api_client.fetch_org_events("Pseudo-Lab", max_pages=2)
+        assert len(result.data) == 200  # Only 2 pages, not 3
+
+
+class TestFetchRepoEvents:
+    """repo events 수집 테스트."""
+
+    def test_basic_fetch(self, api_client: GitHubApiClient, httpx_mock: HTTPXMock) -> None:
+        events = [{"id": "1"}, {"id": "2"}]
+        httpx_mock.add_response(
+            url="https://api.github.com/repos/Pseudo-Lab/repo/events?per_page=100",
+            json=events,
+            headers={"X-RateLimit-Remaining": "4999", "X-RateLimit-Reset": "9999999999"},
+        )
+        result = api_client.fetch_repo_events("Pseudo-Lab", "repo")
+        assert result.status_code == 200
+        assert len(result.data) == 2
+
+
+class TestFetchOrgRepos:
+    """org repos 조회 테스트."""
+
+    def test_basic_fetch(self, api_client: GitHubApiClient, httpx_mock: HTTPXMock) -> None:
+        repos = [{"name": "repo1"}, {"name": "repo2"}]
+        httpx_mock.add_response(
+            url="https://api.github.com/orgs/Pseudo-Lab/repos?per_page=100&type=public",
+            json=repos,
+            headers={"X-RateLimit-Remaining": "4999", "X-RateLimit-Reset": "9999999999"},
+        )
+        result = api_client.fetch_org_repos("Pseudo-Lab")
+        assert result.status_code == 200
+        assert len(result.data) == 2
+        assert result.data[0]["name"] == "repo1"

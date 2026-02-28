@@ -51,6 +51,14 @@ class GitHubApiConfig(BaseModel):
     skip_existing: bool = True
 
 
+class RestApiConfig(BaseModel):
+    """REST API Events 수집 설정."""
+
+    r2_prefix: str = "raw/rest-api"
+    etag_cache_enabled: bool = True
+    repo_supplement_threshold: int = 300
+
+
 class AppConfig(BaseModel):
     """애플리케이션 전체 설정."""
 
@@ -62,6 +70,7 @@ class AppConfig(BaseModel):
     r2: R2Config = Field(default_factory=R2Config)
     d1: D1Config = Field(default_factory=D1Config)
     github_api: GitHubApiConfig = Field(default_factory=GitHubApiConfig)
+    rest_api: RestApiConfig = Field(default_factory=RestApiConfig)
 
     @field_validator("target_orgs")
     @classmethod

@@ -444,6 +444,7 @@ def validate_dl_row(row: dict[str, Any], table_name: str) -> tuple[bool, str | N
 
 def transform_events(
     events: list[GitHubEvent],
+    source: str = "gharchive",
 ) -> tuple[DLRowsByTable, TransformStats]:
     """GitHubEvent 리스트를 타입별 DL Row 딕셔너리로 변환한다.
 
@@ -485,6 +486,11 @@ def transform_events(
                 logger.warning(error_msg)
                 continue
             result.setdefault(table_name, []).append(row)
+
+    # source 필드 주입 (Approach C: 후처리)
+    for table_rows in result.values():
+        for row in table_rows:
+            row["source"] = source
 
     # 출력 통계
     total_output = 0

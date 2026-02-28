@@ -6,6 +6,7 @@ import gzip
 import io
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import orjson
 from click.testing import CliRunner
@@ -323,12 +324,16 @@ class TestFetchExecution:
         assert result.exit_code == 0
         assert "filtered=2" in result.output
 
-    def test_404_continues(self, tmp_path: Path, httpx_mock: HTTPXMock) -> None:
+    @patch("gharchive_etl.downloader.time.sleep")
+    def test_404_continues(self, mock_sleep: MagicMock, tmp_path: Path, httpx_mock: HTTPXMock) -> None:
         """404 시간대를 건너뛰고 다음 시간대 계속 처리."""
         config_path = _write_config(tmp_path)
 
-        # 시간 10: 404, 시간 11: 정상
-        httpx_mock.add_response(url=f"{BASE_URL}/2024-01-15-10.json.gz", status_code=404)
+        # 시간 10: 404 (MAX_404_RETRIES+1 회 등록 — 404 재시도 대응)
+        from gharchive_etl.downloader import MAX_404_RETRIES
+
+        for _ in range(MAX_404_RETRIES + 1):
+            httpx_mock.add_response(url=f"{BASE_URL}/2024-01-15-10.json.gz", status_code=404)
         gz_data = _make_ndjson_gz([_sample_event("1", "pseudolab")])
         httpx_mock.add_response(url=f"{BASE_URL}/2024-01-15-11.json.gz", content=gz_data)
 

@@ -196,6 +196,8 @@ def upload_events_to_r2(
     dry_run: bool = False,
     max_retries: int = 3,
     on_progress: Callable[[str, str], None] | None = None,
+    prefix_override: str | None = None,
+    hour: str | None = None,
 ) -> R2UploadResult:
     """이벤트를 org/repo별로 그룹화하여 R2에 업로드한다.
 
@@ -219,7 +221,9 @@ def upload_events_to_r2(
     result.skipped_invalid_repo = skipped
 
     for (org, repo), group_events in grouped.items():
-        key = _build_r2_key(config.prefix, org, repo, batch_date)
+        effective_prefix = prefix_override if prefix_override is not None else config.prefix
+        date_part = f"{batch_date}-{hour}" if hour else batch_date
+        key = _build_r2_key(effective_prefix, org, repo, date_part)
 
         if on_progress:
             on_progress(org, repo)

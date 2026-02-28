@@ -17,7 +17,8 @@ from gharchive_etl.config import AppConfig, D1Config
 from gharchive_etl.d1 import query_rows
 from gharchive_etl.enrichment_r2 import (
     build_enrichment_r2_key,
-    check_r2_key_exists,
+    load_enriched_keys,
+    save_enriched_key,
     upload_enrichment_json,
     upload_enrichment_text,
 )
@@ -207,13 +208,13 @@ def _enrich_single_item(
     upload_fn: Callable[[Any], bool],
     progress: EnrichmentProgress,
     label: str,
+    known_keys: set[str] | None = None,
 ) -> None:
     """개별 항목 수집의 공통 패턴."""
-    # 1. Skip check
-    if skip_existing and not dry_run:
-        if check_r2_key_exists(bucket, r2_key):
-            progress.skipped += 1
-            return
+    # 1. Skip check — 로컬 트래커 기반 (dry-run에서도 동작)
+    if skip_existing and known_keys is not None and r2_key in known_keys:
+        progress.skipped += 1
+        return
 
     # dry-run: 대상 카운트만 하고 실제 API 호출/업로드 생략
     if dry_run:
@@ -238,6 +239,9 @@ def _enrich_single_item(
     # 3. Upload
     if upload_fn(data):
         progress.completed += 1
+        if known_keys is not None:
+            known_keys.add(r2_key)
+            save_enriched_key(bucket, r2_key)
     else:
         progress.failed += 1
         progress.errors.append(f"{label}: upload failed")
@@ -258,6 +262,7 @@ def enrich_priority_1(
     results: list[EnrichmentProgress] = []
     bucket = config.r2.bucket_name
     skip_existing = config.github_api.skip_existing
+    known_keys = load_enriched_keys(bucket) if skip_existing else None
 
     # 1-1. 커밋 상세
     targets = extract_commit_targets(config.d1, base_date=base_date)
@@ -287,6 +292,7 @@ def enrich_priority_1(
             ),
             progress=progress,
             label=label,
+            known_keys=known_keys,
         )
 
         if on_progress and (i + 1) % 50 == 0:
@@ -324,6 +330,7 @@ def enrich_priority_1(
             ),
             progress=progress,
             label=label,
+            known_keys=known_keys,
         )
 
         if on_progress and (i + 1) % 50 == 0:
@@ -348,6 +355,7 @@ def enrich_priority_2(
     results: list[EnrichmentProgress] = []
     bucket = config.r2.bucket_name
     skip_existing = config.github_api.skip_existing
+    known_keys = load_enriched_keys(bucket) if skip_existing else None
 
     # 2-1. 이슈 댓글
     targets = extract_issue_targets(config.d1, base_date=base_date)
@@ -377,6 +385,7 @@ def enrich_priority_2(
             ),
             progress=progress,
             label=label,
+            known_keys=known_keys,
         )
 
         if on_progress and (i + 1) % 50 == 0:
@@ -414,6 +423,7 @@ def enrich_priority_2(
             ),
             progress=progress,
             label=label,
+            known_keys=known_keys,
         )
 
         if on_progress and (i + 1) % 50 == 0:
@@ -451,6 +461,7 @@ def enrich_priority_2(
             ),
             progress=progress,
             label=label,
+            known_keys=known_keys,
         )
 
         if on_progress and (i + 1) % 50 == 0:
@@ -474,6 +485,7 @@ def enrich_priority_3(
     results: list[EnrichmentProgress] = []
     bucket = config.r2.bucket_name
     skip_existing = config.github_api.skip_existing
+    known_keys = load_enriched_keys(bucket) if skip_existing else None
 
     # 3-1. 유저 프로필
     logins = extract_user_targets(config.d1)
@@ -495,6 +507,7 @@ def enrich_priority_3(
             ),
             progress=progress,
             label=label,
+            known_keys=known_keys,
         )
 
         if on_progress and (i + 1) % 50 == 0:
@@ -521,8 +534,8 @@ def enrich_priority_3(
         label = f"wiki/{owner}/{repo}/{page_name}"
 
         # Wiki는 별도 fetch + upload 패턴
-        if skip_existing and not dry_run:
-            if check_r2_key_exists(bucket, r2_key):
+        if skip_existing:
+            if known_keys is not None and r2_key in known_keys:
                 progress.skipped += 1
                 continue
 
@@ -536,6 +549,9 @@ def enrich_priority_3(
         content = result.data.get("content", "") if result.data else ""
         if upload_enrichment_text(bucket, r2_key, content, dry_run=dry_run):
             progress.completed += 1
+            if known_keys is not None:
+                known_keys.add(r2_key)
+                save_enriched_key(bucket, r2_key)
         else:
             progress.failed += 1
             progress.errors.append(f"{label}: upload failed")

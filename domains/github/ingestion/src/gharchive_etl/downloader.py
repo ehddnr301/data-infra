@@ -27,6 +27,10 @@ from gharchive_etl.models import GitHubEvent
 logger = logging.getLogger(__name__)
 
 
+# ── 404 재시도 설정 ──────────────────────────────────
+MAX_404_RETRIES = 3
+RETRY_404_DELAY_SEC = 60
+
 # ── 데이터 클래스 ─────────────────────────────────────
 
 
@@ -309,95 +313,120 @@ def process_hour(
     )
 
     # 스트림 중단 시 전체 재시도 (부분 결과 폐기)
+    # 외부 루프: 404 재시도 (gharchive 업로드 지연 대응)
     last_exc: Exception | None = None
-    for attempt in range(config.http.max_retries + 1):
-        try:
-            downloaded = 0
-            parsed_count = 0
-            invalid_count = 0
-            parsed_events: list[GitHubEvent] = []
+    for _404_attempt in range(MAX_404_RETRIES + 1):
+        _got_404 = False
+        for attempt in range(config.http.max_retries + 1):
+            try:
+                downloaded = 0
+                parsed_count = 0
+                invalid_count = 0
+                parsed_events: list[GitHubEvent] = []
 
-            for raw in iter_ndjson_events(date, hour, config.http, config.gharchive.base_url):
-                downloaded += 1
-                event = safe_parse_event(raw)
-                if event is None:
-                    invalid_count += 1
-                else:
-                    parsed_count += 1
-                    parsed_events.append(event)
+                for raw in iter_ndjson_events(date, hour, config.http, config.gharchive.base_url):
+                    downloaded += 1
+                    event = safe_parse_event(raw)
+                    if event is None:
+                        invalid_count += 1
+                    else:
+                        parsed_count += 1
+                        parsed_events.append(event)
 
-            # 필터 적용
-            filtered = filter_events(parsed_events, config)
+                # 필터 적용
+                filtered = filter_events(parsed_events, config)
 
-            stats.downloaded = downloaded
-            stats.parsed = parsed_count
-            stats.invalid = invalid_count
-            stats.filtered_in = len(filtered)
-            stats.duration_ms = (time.monotonic() - start) * 1000
-
-            logger.info(
-                "Hour complete: %s-%d (downloaded=%d, parsed=%d, invalid=%d, filtered=%d, %.0fms)",
-                date,
-                hour,
-                downloaded,
-                parsed_count,
-                invalid_count,
-                len(filtered),
-                stats.duration_ms,
-                extra={
-                    "event_code": "HOUR_COMPLETE",
-                    "date": date,
-                    "hour": hour,
-                    "duration_ms": stats.duration_ms,
-                    "counts": {
-                        "downloaded": downloaded,
-                        "parsed": parsed_count,
-                        "invalid": invalid_count,
-                        "filtered_in": len(filtered),
-                    },
-                },
-            )
-
-            return filtered, stats
-
-        except HourNotFoundError:
-            stats.skipped_404 = True
-            stats.duration_ms = (time.monotonic() - start) * 1000
-            return [], stats
-
-        except DownloadError as exc:
-            last_exc = exc
-            if attempt < config.http.max_retries:
-                wait = _backoff_wait(attempt, config.http.backoff_factor)
-                logger.warning(
-                    "Stream interrupted for %s-%d, retrying entire hour (attempt %d/%d)",
-                    date,
-                    hour,
-                    attempt + 1,
-                    config.http.max_retries,
-                    extra={
-                        "event_code": "RETRY_ATTEMPT",
-                        "date": date,
-                        "hour": hour,
-                    },
-                )
-                time.sleep(wait)
-            else:
-                stats.error = str(exc)
+                stats.downloaded = downloaded
+                stats.parsed = parsed_count
+                stats.invalid = invalid_count
+                stats.filtered_in = len(filtered)
                 stats.duration_ms = (time.monotonic() - start) * 1000
-                logger.error(
-                    "Hour failed after retries: %s-%d: %s",
+
+                logger.info(
+                    "Hour complete: %s-%d (downloaded=%d, parsed=%d, invalid=%d, filtered=%d, %.0fms)",
                     date,
                     hour,
-                    exc,
+                    downloaded,
+                    parsed_count,
+                    invalid_count,
+                    len(filtered),
+                    stats.duration_ms,
                     extra={
-                        "event_code": "NETWORK_ERROR",
+                        "event_code": "HOUR_COMPLETE",
                         "date": date,
                         "hour": hour,
                         "duration_ms": stats.duration_ms,
+                        "counts": {
+                            "downloaded": downloaded,
+                            "parsed": parsed_count,
+                            "invalid": invalid_count,
+                            "filtered_in": len(filtered),
+                        },
                     },
                 )
-                return [], stats
+
+                return filtered, stats
+
+            except HourNotFoundError:
+                if _404_attempt < MAX_404_RETRIES:
+                    logger.warning(
+                        "Hour file not found (404): %s-%d, retry %d/%d in %ds (gharchive upload delay)",
+                        date,
+                        hour,
+                        _404_attempt + 1,
+                        MAX_404_RETRIES,
+                        RETRY_404_DELAY_SEC,
+                        extra={
+                            "event_code": "HOUR_NOT_FOUND_RETRY",
+                            "date": date,
+                            "hour": hour,
+                        },
+                    )
+                    time.sleep(RETRY_404_DELAY_SEC)
+                    _got_404 = True
+                    break  # inner loop → continue outer 404 loop
+                else:
+                    stats.skipped_404 = True
+                    stats.duration_ms = (time.monotonic() - start) * 1000
+                    return [], stats
+
+            except DownloadError as exc:
+                last_exc = exc
+                if attempt < config.http.max_retries:
+                    wait = _backoff_wait(attempt, config.http.backoff_factor)
+                    logger.warning(
+                        "Stream interrupted for %s-%d, retrying entire hour (attempt %d/%d)",
+                        date,
+                        hour,
+                        attempt + 1,
+                        config.http.max_retries,
+                        extra={
+                            "event_code": "RETRY_ATTEMPT",
+                            "date": date,
+                            "hour": hour,
+                        },
+                    )
+                    time.sleep(wait)
+                else:
+                    stats.error = str(exc)
+                    stats.duration_ms = (time.monotonic() - start) * 1000
+                    logger.error(
+                        "Hour failed after retries: %s-%d: %s",
+                        date,
+                        hour,
+                        exc,
+                        extra={
+                            "event_code": "NETWORK_ERROR",
+                            "date": date,
+                            "hour": hour,
+                            "duration_ms": stats.duration_ms,
+                        },
+                    )
+                    return [], stats
+
+        if not _got_404:
+            # inner loop exhausted without 404 — DownloadError path already returned
+            break
 
     # 도달 불가
     stats.error = str(last_exc)

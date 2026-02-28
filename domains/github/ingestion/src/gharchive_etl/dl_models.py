@@ -18,6 +18,7 @@ class _CommonFields(TypedDict):
     user_login: str
     ts_kst: str
     base_date: str
+    source: str  # 'gharchive' | 'rest_api'
 
 
 # 1) dl_push_events — PushEvent (커밋 단위 펼침)
@@ -231,7 +232,7 @@ DL_TABLE_COLUMNS: dict[str, list[str]] = {
         "head_sha", "before_sha",
         "commit_sha", "commit_author_name", "commit_author_email",
         "commit_message", "commit_distinct", "commit_url",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
     "dl_pull_request_events": [
         "event_id", "repo_name", "organization", "user_login",
@@ -242,14 +243,14 @@ DL_TABLE_COLUMNS: dict[str, list[str]] = {
         "commits_count", "additions", "deletions", "changed_files",
         "issue_comments_count", "review_comments_count",
         "is_merged", "merge_commit_sha",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
     "dl_issues_events": [
         "event_id", "repo_name", "organization", "user_login",
         "issue_action", "issue_number", "issue_title", "issue_body",
         "issue_state", "issue_html_url",
         "issue_author_login", "issue_author_id",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
     "dl_issue_comment_events": [
         "event_id", "repo_name", "organization", "user_login",
@@ -257,31 +258,31 @@ DL_TABLE_COLUMNS: dict[str, list[str]] = {
         "issue_html_url", "issue_author_login", "issue_author_id",
         "comment_id", "comment_html_url", "comment_body",
         "commenter_login", "commenter_id",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
     "dl_watch_events": [
         "event_id", "repo_name", "organization", "user_login",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
     "dl_fork_events": [
         "event_id", "repo_name", "organization", "user_login",
         "forkee_id", "forkee_full_name", "forkee_html_url",
         "forkee_owner_login", "forkee_owner_id",
         "forkee_description", "is_fork_private", "forkee_default_branch",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
     "dl_create_events": [
         "event_id", "repo_name", "organization", "user_login",
         "created_ref_type", "created_ref_name",
         "default_branch", "repo_description", "pusher_type",
         "is_repo_creation", "is_branch_creation", "is_tag_creation",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
     "dl_delete_events": [
         "event_id", "repo_name", "organization", "user_login",
         "deleted_ref_type", "deleted_ref_name", "pusher_type",
         "is_branch_deletion", "is_tag_deletion",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
     "dl_pull_request_review_events": [
         "event_id", "repo_name", "organization", "user_login",
@@ -289,7 +290,7 @@ DL_TABLE_COLUMNS: dict[str, list[str]] = {
         "review_state", "review_body", "review_html_url",
         "commit_sha", "review_submitted_at_utc", "review_submitted_at_kst",
         "pr_number", "pr_title", "pr_html_url", "pr_author_login",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
     "dl_pull_request_review_comment_events": [
         "event_id", "repo_name", "organization", "user_login",
@@ -298,30 +299,30 @@ DL_TABLE_COLUMNS: dict[str, list[str]] = {
         "diff_hunk", "file_path", "commit_id", "review_id",
         "commenter_login", "commenter_id",
         "pr_number", "pr_title", "pr_html_url", "pr_state",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
     "dl_member_events": [
         "event_id", "repo_name", "organization", "user_login",
         "member_login", "member_id", "member_html_url", "member_action",
         "is_member_added", "is_member_removed",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
     "dl_gollum_events": [
         "event_id", "repo_name", "organization", "user_login",
         "page_name", "page_title", "page_summary", "page_action",
         "page_sha", "page_html_url",
         "is_page_created", "is_page_edited", "is_page_deleted",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
     "dl_release_events": [
         "event_id", "repo_name", "organization", "user_login",
         "release_action", "tag_name", "release_name",
         "is_prerelease", "release_html_url", "release_author_login",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
     "dl_public_events": [
         "event_id", "repo_name", "organization", "user_login",
-        "ts_kst", "base_date",
+        "ts_kst", "base_date", "source",
     ],
 }
 

@@ -283,3 +283,44 @@ class TestUploadToR2:
 
         with pytest.raises(RuntimeError, match="wrangler CLI is not installed"):
             upload_events_to_r2(events, "2024-01-15", r2_config)
+
+
+# ── TestPrefixOverride ─────────────────────────────────────
+
+
+class TestPrefixOverride:
+    """upload_events_to_r2 prefix_override/hour 파라미터 테스트."""
+
+    @pytest.fixture()
+    def r2_config(self) -> R2Config:
+        return R2Config(bucket_name="github-archive-raw", prefix="raw/github-archive")
+
+    @patch("gharchive_etl.r2._find_wrangler", return_value="wrangler")
+    @patch("gharchive_etl.r2.subprocess.run")
+    def test_default_prefix(self, mock_run: MagicMock, mock_find: MagicMock, r2_config: R2Config) -> None:
+        """prefix_override=None일 때 config.prefix 사용."""
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        events = [_make_event(event_id="1", repo_name="org/repo")]
+        upload_events_to_r2(events, "2024-01-15", r2_config)
+        call_args = mock_run.call_args[0][0]
+        assert call_args[4] == "github-archive-raw/raw/github-archive/org/repo/2024-01-15.jsonl.gz"
+
+    @patch("gharchive_etl.r2._find_wrangler", return_value="wrangler")
+    @patch("gharchive_etl.r2.subprocess.run")
+    def test_prefix_override_rest_api(self, mock_run: MagicMock, mock_find: MagicMock, r2_config: R2Config) -> None:
+        """prefix_override='raw/rest-api'일 때 해당 prefix 사용."""
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        events = [_make_event(event_id="1", repo_name="org/repo")]
+        upload_events_to_r2(events, "2024-01-15", r2_config, prefix_override="raw/rest-api")
+        call_args = mock_run.call_args[0][0]
+        assert call_args[4] == "github-archive-raw/raw/rest-api/org/repo/2024-01-15.jsonl.gz"
+
+    @patch("gharchive_etl.r2._find_wrangler", return_value="wrangler")
+    @patch("gharchive_etl.r2.subprocess.run")
+    def test_hour_in_key(self, mock_run: MagicMock, mock_find: MagicMock, r2_config: R2Config) -> None:
+        """hour 파라미터가 키에 포함된다."""
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        events = [_make_event(event_id="1", repo_name="org/repo")]
+        upload_events_to_r2(events, "2024-01-15", r2_config, prefix_override="raw/rest-api", hour="14")
+        call_args = mock_run.call_args[0][0]
+        assert call_args[4] == "github-archive-raw/raw/rest-api/org/repo/2024-01-15-14.jsonl.gz"

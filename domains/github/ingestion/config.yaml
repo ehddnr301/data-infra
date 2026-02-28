@@ -45,3 +45,9 @@ github_api:
   backoff_factor: 2.0
   request_timeout_sec: 30
   skip_existing: true
+
+# REST API Events 수집 설정
+rest_api:
+  r2_prefix: "raw/rest-api"
+  etag_cache_enabled: true
+  repo_supplement_threshold: 300

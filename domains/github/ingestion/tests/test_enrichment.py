@@ -194,14 +194,14 @@ class TestEnrichPriority1:
         assert results[0].failed == 1
         assert results[0].completed == 0
 
-    @patch("gharchive_etl.enrichment.check_r2_key_exists")
+    @patch("gharchive_etl.enrichment.load_enriched_keys")
     @patch("gharchive_etl.enrichment.extract_pr_targets")
     @patch("gharchive_etl.enrichment.extract_commit_targets")
     def test_skip_existing(
         self,
         mock_commits: MagicMock,
         mock_prs: MagicMock,
-        mock_exists: MagicMock,
+        mock_load_keys: MagicMock,
         mock_app_config: AppConfig,
     ) -> None:
         mock_app_config.github_api.skip_existing = True
@@ -209,7 +209,8 @@ class TestEnrichPriority1:
             {"repo_name": "Pseudo-Lab/repo", "commit_sha": "abc"},
         ]
         mock_prs.return_value = []
-        mock_exists.return_value = True
+        # 로컬 트래커에 이미 해당 키가 존재
+        mock_load_keys.return_value = {"enriched/commits/Pseudo-Lab/repo/abc.json"}
 
         mock_api = MagicMock()
         results = enrich_priority_1(mock_api, mock_app_config)

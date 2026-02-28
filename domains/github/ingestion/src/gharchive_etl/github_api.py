@@ -86,6 +86,7 @@ class GitHubApiClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> GitHubApiResult:
         """공통 요청 메서드 (rate limit 체크 → 요청 → 재시도)."""
         max_retries = self._config.max_retries
@@ -94,9 +95,18 @@ class GitHubApiClient:
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
-                resp = self._client.request(method, path, params=params)
+                resp = self._client.request(method, path, params=params, headers=extra_headers)
 
                 self._check_rate_limit(resp)
+
+                # 304: Not Modified (ETag 조건부 요청)
+                if resp.status_code == 304:
+                    return GitHubApiResult(
+                        url=str(resp.url),
+                        status_code=304,
+                        data=None,
+                        headers=dict(resp.headers),
+                    )
 
                 # 429: rate limited
                 if resp.status_code == 429:
@@ -205,11 +215,13 @@ class GitHubApiClient:
                 return match.group(1)
         return None
 
-    def _paginated_get(self, path: str, *, per_page: int = 100) -> list[dict[str, Any]]:
+    def _paginated_get(self, path: str, *, per_page: int = 100, extra_params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """Link 헤더 기반 pagination으로 전체 결과를 수집한다."""
         all_items: list[dict[str, Any]] = []
         url: str | None = path
         params: dict[str, Any] | None = {"per_page": per_page}
+        if extra_params:
+            params.update(extra_params)
 
         while url:
             result = self._request("GET", url, params=params)
@@ -316,6 +328,71 @@ class GitHubApiClient:
             "created_at": data.get("created_at"),
             "updated_at": data.get("updated_at"),
         }
+
+    def fetch_org_events(
+        self, org: str, *, per_page: int = 100, max_pages: int = 3, etag: str | None = None,
+    ) -> GitHubApiResult:
+        """GET /orgs/{org}/events — org 단위 공개 이벤트 수집.
+
+        ETag 기반 조건부 요청을 지원한다. 최대 max_pages 페이지까지 수집.
+        """
+        extra_headers = {"If-None-Match": etag} if etag else None
+        first_result = self._request(
+            "GET", f"/orgs/{org}/events",
+            params={"per_page": per_page},
+            extra_headers=extra_headers,
+        )
+        if first_result.status_code == 304 or first_result.error or first_result.skipped:
+            return first_result
+
+        all_events: list[dict[str, Any]] = []
+        if isinstance(first_result.data, list):
+            all_events.extend(first_result.data)
+
+        # 추가 페이지 수집 (최대 max_pages - 1 추가 페이지)
+        next_url = self._parse_next_link(first_result.headers)
+        pages_fetched = 1
+        while next_url and pages_fetched < max_pages:
+            result = self._request("GET", next_url)
+            if result.error or result.skipped:
+                break
+            if isinstance(result.data, list):
+                all_events.extend(result.data)
+            next_url = self._parse_next_link(result.headers)
+            pages_fetched += 1
+
+        return GitHubApiResult(
+            url=f"/orgs/{org}/events",
+            status_code=first_result.status_code,
+            data=all_events,
+            headers=first_result.headers,
+        )
+
+    def fetch_repo_events(
+        self, owner: str, repo: str, *, per_page: int = 100,
+    ) -> GitHubApiResult:
+        """GET /repos/{owner}/{repo}/events — repo 단위 이벤트 수집."""
+        items = self._paginated_get(f"/repos/{owner}/{repo}/events", per_page=per_page)
+        return GitHubApiResult(
+            url=f"/repos/{owner}/{repo}/events",
+            status_code=200,
+            data=items,
+        )
+
+    def fetch_org_repos(
+        self, org: str, *, repo_type: str = "public", per_page: int = 100,
+    ) -> GitHubApiResult:
+        """GET /orgs/{org}/repos — org의 repo 목록 조회."""
+        items = self._paginated_get(
+            f"/orgs/{org}/repos",
+            per_page=per_page,
+            extra_params={"type": repo_type},
+        )
+        return GitHubApiResult(
+            url=f"/orgs/{org}/repos",
+            status_code=200,
+            data=items,
+        )
 
     # ── 공개 API 메서드 ──────────────────────────────────────
 

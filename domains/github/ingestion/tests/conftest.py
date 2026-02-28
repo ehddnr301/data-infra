@@ -58,6 +58,12 @@ def sample_config_data() -> dict[str, Any]:
         },
         "r2": {"bucket_name": "github-archive-raw", "prefix": "raw/github-archive"},
         "d1": {"database_id": "test-db-id"},
+        "rest_api": {
+            "github_token": "ghp_test_token",
+            "per_page": 100,
+            "max_pages": 3,
+            "etag_cache_dir": "/tmp/etag_cache",
+        },
     }
 
 

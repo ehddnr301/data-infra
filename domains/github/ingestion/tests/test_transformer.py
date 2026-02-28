@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
-from gharchive_etl.dl_models import EVENT_TYPE_TO_TABLE, EXPLODED_TABLES
+from gharchive_etl.dl_models import DL_TABLE_COLUMNS, EVENT_TYPE_TO_TABLE, EXPLODED_TABLES
 from gharchive_etl.models import GitHubEvent
 from gharchive_etl.transformer import (
     DLRowsByTable,
@@ -597,3 +597,42 @@ class TestComputeDailyStats:
         assert len(stats) == 2
         types = {s["event_type"] for s in stats}
         assert types == {"WatchEvent", "IssuesEvent"}
+
+
+# ── source 필드 테스트 ──────────────────────────────────
+
+class TestSourceField:
+    """source 필드 주입 테스트."""
+
+    def test_default_source_gharchive(self) -> None:
+        """기본값 source='gharchive' 확인."""
+        event = _make_event(event_type="WatchEvent")
+        result, _ = transform_events([event])
+        row = result["dl_watch_events"][0]
+        assert row["source"] == "gharchive"
+
+    def test_source_rest_api(self) -> None:
+        """source='rest_api' 명시 전달 확인."""
+        event = _make_event(event_type="WatchEvent")
+        result, _ = transform_events([event], source="rest_api")
+        row = result["dl_watch_events"][0]
+        assert row["source"] == "rest_api"
+
+    def test_source_in_all_dl_table_columns(self) -> None:
+        """모든 DL_TABLE_COLUMNS에 'source' 컬럼 포함 확인."""
+        for table_name, columns in DL_TABLE_COLUMNS.items():
+            assert "source" in columns, f"'{table_name}' is missing 'source' column"
+
+    def test_source_injected_in_all_tables(self) -> None:
+        """여러 이벤트 타입 변환 시 모든 테이블의 행에 source 주입 확인."""
+        events = [
+            _make_event(event_id="1", event_type="PushEvent", payload={"commits": [{"sha": "a"}]}),
+            _make_event(event_id="2", event_type="IssuesEvent", payload={"action": "opened", "issue": {}}),
+            _make_event(event_id="3", event_type="WatchEvent"),
+        ]
+        result, _ = transform_events(events, source="rest_api")
+        for table_name, rows in result.items():
+            for row in rows:
+                assert row.get("source") == "rest_api", (
+                    f"Row in '{table_name}' missing source='rest_api'"
+                )

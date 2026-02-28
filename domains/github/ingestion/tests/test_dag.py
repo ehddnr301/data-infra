@@ -32,7 +32,7 @@ class TestDagIntegrity:
         spec.loader.exec_module(module)
 
     def test_dag_has_correct_schedule(self):
-        """DAG 스케줄이 '0 2 * * *'으로 설정되어 있다."""
+        """DAG 스케줄이 '0 3 * * *'으로 설정되어 있다."""
         from airflow.models import DagBag
 
         dagbag = DagBag(dag_folder=str(DAG_DIR), include_examples=False)
@@ -41,7 +41,7 @@ class TestDagIntegrity:
         )
         dag = dagbag.dags["github_archive_daily"]
 
-        assert str(dag.schedule_interval) == "0 2 * * *", (
+        assert str(dag.schedule_interval) == "0 3 * * *", (
             f"스케줄 불일치: {dag.schedule_interval}"
         )
         assert dag.catchup is True, "catchup이 False로 변경됨"

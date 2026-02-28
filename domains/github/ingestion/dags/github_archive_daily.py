@@ -48,7 +48,7 @@ DEFAULT_ARGS = {
 @dag(
     dag_id="github_archive_daily",
     description="GitHub Archive 일일 ETL: 수집 → 검증 → R2/D1 업로드",
-    schedule="0 2 * * *",
+    schedule="0 3 * * *",
     start_date=pendulum.datetime(2025, 1, 1, tz="UTC"),
     catchup=True,
     max_active_runs=1,

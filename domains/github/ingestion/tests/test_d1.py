@@ -43,6 +43,7 @@ def _make_watch_row(**overrides: Any) -> dict[str, Any]:
         "user_login": "testuser",
         "ts_kst": "2024-01-15T19:30:00+09:00",
         "base_date": "2024-01-15",
+        "source": "gharchive",
     }
     defaults.update(overrides)
     return defaults
@@ -69,6 +70,7 @@ def _make_push_row(**overrides: Any) -> dict[str, Any]:
         "commit_url": "https://github.com/...",
         "ts_kst": "2024-01-15T19:30:00+09:00",
         "base_date": "2024-01-15",
+        "source": "gharchive",
     }
     defaults.update(overrides)
     return defaults
@@ -100,7 +102,7 @@ def _mock_response(status_code: int = 200, json_data: dict | None = None) -> htt
 # Watch 테이블: 6개 컬럼
 _WATCH_COLUMNS = [
     "event_id", "repo_name", "organization", "user_login",
-    "ts_kst", "base_date",
+    "ts_kst", "base_date", "source",
 ]
 
 # Push 테이블: 18개 컬럼
@@ -110,7 +112,7 @@ _PUSH_COLUMNS = [
     "head_sha", "before_sha",
     "commit_sha", "commit_author_name", "commit_author_email",
     "commit_message", "commit_distinct", "commit_url",
-    "ts_kst", "base_date",
+    "ts_kst", "base_date", "source",
 ]
 
 
@@ -130,10 +132,10 @@ class TestBuildDlBatches:
     def test_dynamic_batch_size_by_column_count(self) -> None:
         """컬럼 수에 따른 동적 배치 크기 계산."""
         max_watch = MAX_BINDING_PARAMS // len(_WATCH_COLUMNS)
-        assert max_watch == 16  # 100 // 6
+        assert max_watch == 14  # 100 // 7
 
         max_push = MAX_BINDING_PARAMS // len(_PUSH_COLUMNS)
-        assert max_push == 5  # 100 // 18
+        assert max_push == 5  # 100 // 19
 
     def test_batch_split_by_bytes(self) -> None:
         """바이트 기반 분할."""

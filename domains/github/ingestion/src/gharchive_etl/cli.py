@@ -6,6 +6,7 @@ gharchive-etl fetch 명령으로 GitHub Archive 이벤트를 수집합니다.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from dataclasses import asdict
 from datetime import date as date_type
@@ -275,7 +276,7 @@ def _load_jsonl(path: Path) -> tuple[list[GitHubEvent], int]:
 @click.option("--end-date", default=None, help="범위 종료 날짜 (예: 2024-01-31)")
 @click.option(
     "--input-dir",
-    required=True,
+    default=None,
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     help="JSONL 파일이 있는 디렉터리 경로",
 )
@@ -285,6 +286,11 @@ def _load_jsonl(path: Path) -> tuple[list[GitHubEvent], int]:
     default="all",
     help="업로드 대상 (r2, d1, all 중 택1, 기본: all)",
 )
+@click.option("--source", type=click.Choice(["gharchive", "rest_api"]),
+              default="gharchive", help="데이터 소스 (기본: gharchive)")
+@click.option("--input-file", default=None,
+              type=click.Path(exists=True, path_type=Path),
+              help="특정 JSONL 파일 직접 지정 (--date 필수)")
 @click.option("--dry-run", is_flag=True, default=False, help="실제 업로드 없이 시뮬레이션")
 @click.option(
     "--config",
@@ -298,8 +304,10 @@ def upload(
     single_date: str | None,
     start_date: str | None,
     end_date: str | None,
-    input_dir: Path,
+    input_dir: Path | None,
     target: str,
+    source: str,
+    input_file: Path | None,
     dry_run: bool,
     config_path: Path | None,
     json_log: bool,
@@ -309,6 +317,14 @@ def upload(
     fetch 명령으로 생성된 JSONL 파일을 읽어 Cloudflare R2 및/또는 D1에 적재합니다.
     """
     setup_logging(json_format=json_log)
+
+    # --input-file / --input-dir 상호배타 검증
+    if input_file and input_dir:
+        raise click.UsageError("--input-file과 --input-dir는 동시에 사용할 수 없습니다")
+    if not input_file and not input_dir:
+        raise click.UsageError("--input-file 또는 --input-dir를 지정하세요")
+    if input_file and not single_date:
+        raise click.UsageError("--input-file 사용 시 --date가 필수입니다")
 
     # ── 입력 검증 ──
     _validate_date_options(single_date, start_date, end_date)
@@ -351,7 +367,7 @@ def upload(
 
     for batch_date in dates:
         date_str = batch_date.strftime("%Y-%m-%d")
-        jsonl_path = input_dir / f"{date_str}.jsonl"
+        jsonl_path = input_file if input_file else input_dir / f"{date_str}.jsonl"
 
         if not jsonl_path.exists():
             logger.warning("JSONL file not found, skipping: %s", jsonl_path)
@@ -374,7 +390,10 @@ def upload(
         # R2 업로드
         if target in ("r2", "all"):
             click.echo(f"  [R2] uploading {len(events)} events...")
-            r2_result = upload_events_to_r2(events, date_str, config.r2, dry_run=dry_run)
+            prefix_override = config.rest_api.r2_prefix if source == "rest_api" else None
+            r2_result = upload_events_to_r2(
+                events, date_str, config.r2, dry_run=dry_run, prefix_override=prefix_override,
+            )
             click.echo(
                 f"  [R2] files={r2_result.files_uploaded}, "
                 f"bytes={r2_result.bytes_total}, "
@@ -385,7 +404,7 @@ def upload(
         # D1 적재
         if target in ("d1", "all"):
             click.echo(f"  [D1] transforming {len(events)} events...")
-            dl_rows, _transform_stats = transform_events(events)
+            dl_rows, _transform_stats = transform_events(events, source=source)
 
             total_dl_rows = sum(len(rows) for rows in dl_rows.values())
             click.echo(f"  [D1] inserting {total_dl_rows} rows into {len(dl_rows)} DL tables...")
@@ -543,8 +562,6 @@ def check_usage(
     json_log: bool,
 ) -> None:
     """Cloudflare Workers/D1/R2 사용량을 확인하고 Slack으로 리포트를 전송합니다."""
-    import os
-
     from gharchive_etl.cloudflare_usage import check_and_alert_usage
 
     setup_logging(json_format=json_log)
@@ -623,7 +640,6 @@ def enrich(
         gharchive-etl enrich --priority 1\n
         gharchive-etl enrich --dry-run
     """
-    import os
     import time as _time
 
     from gharchive_etl.enrichment import (
@@ -723,6 +739,125 @@ def enrich(
         click.echo("  (DRY RUN)")
 
     if total_failed > 0 and not dry_run:
+        sys.exit(1)
+
+
+@main.command("rest-fetch")
+@click.option("--output-jsonl", required=True, type=click.Path(path_type=Path),
+              help="수집한 이벤트를 저장할 JSONL 파일 경로")
+@click.option("--backfill", is_flag=True, default=False,
+              help="백필 모드: ETag 무시, 모든 org에서 repo 보충 강제 실행")
+@click.option("--dry-run", is_flag=True, default=False, help="시뮬레이션 모드")
+@click.option(
+    "--config",
+    "config_path",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="설정 파일 경로",
+)
+@click.option("--json-log/--no-json-log", default=True, help="JSON 로그 포맷")
+def rest_fetch(
+    output_jsonl: Path,
+    backfill: bool,
+    dry_run: bool,
+    config_path: Path | None,
+    json_log: bool,
+) -> None:
+    """GitHub REST API에서 이벤트를 수집합니다."""
+    import time as _time
+
+    from gharchive_etl.github_api import GitHubApiClient
+    from gharchive_etl.rest_api_collector import RestApiCollector
+
+    setup_logging(json_format=json_log)
+    config = load_config(config_path)
+
+    # GITHUB_TOKEN 미설정 시 graceful skip
+    token_var = config.github_api.token_env_var
+    if not os.environ.get(token_var):
+        click.echo(f"[rest-fetch] {token_var} 미설정 — 수집 스킵")
+        return
+
+    if dry_run:
+        click.echo("[rest-fetch] DRY RUN 모드")
+
+    try:
+        api = GitHubApiClient(config.github_api)
+    except RuntimeError as exc:
+        click.echo(f"GitHub API error: {exc}", err=True)
+        sys.exit(1)
+
+    try:
+        collector = RestApiCollector(api, config)
+        click.echo(f"[rest-fetch] collecting events from {len(config.target_orgs)} orgs...")
+        start_time = _time.time()
+        events, summary = collector.collect_all(backfill=backfill)
+
+        elapsed = _time.time() - start_time
+        click.echo(
+            f"[rest-fetch] {summary.total_events} events collected, "
+            f"{summary.total_api_calls} API calls, "
+            f"{elapsed:.1f}s elapsed"
+        )
+
+        if not dry_run and events:
+            import orjson
+
+            output_jsonl.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_jsonl, "wb") as f:
+                for event in events:
+                    f.write(orjson.dumps(event.model_dump(mode="json")) + b"\n")
+            click.echo(f"[rest-fetch] saved {len(events)} events to {output_jsonl}")
+        elif dry_run:
+            click.echo(f"[rest-fetch] (DRY RUN) would save {len(events)} events to {output_jsonl}")
+
+        for r in summary.results:
+            status = "304-skip" if r.skipped_304 else f"{r.new_events} events"
+            supplement = " +repo" if r.repo_supplement else ""
+            click.echo(f"  {r.org}: {status}{supplement} ({r.api_calls} calls)")
+
+    finally:
+        api.close()
+
+
+@main.command("sync-cache")
+@click.option(
+    "--config",
+    "config_path",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="설정 파일 경로",
+)
+def sync_cache(config_path: Path | None) -> None:
+    """R2에서 기존 enrichment 키를 조회하여 로컬 캐시를 동기화합니다.
+
+    이미 R2에 업로드된 enrichment 데이터의 키 목록을 가져와서
+    로컬 트래커 파일에 기록합니다. 이후 enrich 실행 시 해당 키는 skip됩니다.
+
+    사용 예:\n
+        gharchive-etl sync-cache
+    """
+    from gharchive_etl.enrichment_r2 import sync_enriched_keys_from_r2
+
+    config = load_config(config_path)
+    bucket = config.r2.bucket_name
+    account_id = config.d1.account_id
+    api_token = config.d1.api_token
+
+    if not account_id or not api_token:
+        click.echo(
+            "[sync-cache] CLOUDFLARE_ACCOUNT_ID 또는 CLOUDFLARE_API_TOKEN이 "
+            "설정되지 않았습니다.",
+            err=True,
+        )
+        sys.exit(1)
+
+    click.echo(f"[sync-cache] R2 버킷 '{bucket}'에서 enrichment 키 조회 중...")
+    try:
+        total = sync_enriched_keys_from_r2(bucket, account_id, api_token)
+        click.echo(f"[sync-cache] 완료: {total:,}개 키를 로컬 캐시에 동기화했습니다.")
+    except Exception as exc:
+        click.echo(f"[sync-cache] 실패: {exc}", err=True)
         sys.exit(1)
 
 
