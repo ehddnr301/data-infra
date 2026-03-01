@@ -26,6 +26,46 @@ export type GlossaryTerm = {
   updated_at: IsoDateTime
 }
 
+export type LineageNodeData = {
+  datasetId: string
+  label?: string
+  domain?: DomainName | string
+}
+
+export type LineageEdgeData = {
+  step?: string
+}
+
+export type LineageNode = {
+  id: string
+  type: 'dataset'
+  position: {
+    x: number
+    y: number
+  }
+  data: LineageNodeData
+}
+
+export type LineageEdge = {
+  id: string
+  source: string
+  target: string
+  data?: LineageEdgeData
+  label?: string
+}
+
+export type LineageGraph = {
+  version: 1
+  nodes: LineageNode[]
+  edges: LineageEdge[]
+}
+
+export type LineageViewport = {
+  x: number
+  y: number
+  zoom: number
+}
+
 // D1 catalog_columns 테이블 Row
 export type CatalogColumn = {
   dataset_id: string
@@ -34,6 +74,21 @@ export type CatalogColumn = {
   description: string | null
   is_pii: boolean
   examples: string | null // JSON array
+}
+
+export type DatasetPreviewResponse = {
+  datasetId: string
+  source: {
+    kind: 'mapped-table' | 'unmapped'
+    table: string | null
+  }
+  columns: string[]
+  rows: Array<Record<string, unknown>>
+  meta: {
+    limit: number
+    returned: number
+    reason?: 'dataset-not-mapped' | 'empty-source'
+  }
 }
 
 export type SearchType = 'all' | 'dataset' | 'column' | 'glossary'

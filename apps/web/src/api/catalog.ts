@@ -3,6 +3,7 @@ import type {
   ApiSuccess,
   CatalogColumn,
   CatalogDataset,
+  DatasetPreviewResponse,
   PaginatedResponse,
 } from '@pseudolab/shared-types'
 
@@ -20,4 +21,10 @@ export function getDataset(id: string) {
 
 export function getColumns(datasetId: string) {
   return apiGet<ApiSuccess<CatalogColumn[]>>(`/catalog/datasets/${datasetId}/columns`)
+}
+
+export function getDatasetPreview(datasetId: string, params?: { limit?: number }) {
+  return apiGet<ApiSuccess<DatasetPreviewResponse>>(`/catalog/datasets/${datasetId}/preview`, {
+    params,
+  })
 }

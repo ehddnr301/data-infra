@@ -3,8 +3,10 @@ import type {
   ApiSuccess,
   CatalogColumn,
   CatalogDataset,
+  DatasetPreviewResponse,
   Env,
   GlossaryTerm,
+  LineageGraph,
   PaginatedResponse,
 } from '@pseudolab/shared-types'
 import { Hono } from 'hono'
@@ -65,6 +67,55 @@ const GlossaryUpdateBodySchema = z
 
 const IdParamSchema = z.object({
   id: z.string().min(1),
+})
+
+const PreviewQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(100).optional(),
+})
+
+const PREVIEW_SOURCE_BY_DATASET_ID: Record<string, { table: string; sortCol: string }> = {
+  'discord.messages.v1': {
+    table: 'discord_messages',
+    sortCol: 'created_at',
+  },
+}
+
+const DATASET_ID_REGEX = /^[\w.-]+$/
+
+const LineageParamSchema = z.object({
+  datasetId: z.string().min(1).max(255).regex(DATASET_ID_REGEX, 'datasetId has invalid format'),
+})
+
+const LineageNodeSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal('dataset'),
+  position: z.object({
+    x: z.number(),
+    y: z.number(),
+  }),
+  data: z.object({
+    datasetId: z.string().min(1),
+    label: z.string().min(1).optional(),
+    domain: z.string().min(1).optional(),
+  }),
+})
+
+const LineageEdgeSchema = z.object({
+  id: z.string().min(1),
+  source: z.string().min(1),
+  target: z.string().min(1),
+  data: z
+    .object({
+      step: z.string().min(1).optional(),
+    })
+    .optional(),
+  label: z.string().min(1).optional(),
+})
+
+const LineageGraphSchema = z.object({
+  version: z.literal(1),
+  nodes: z.array(LineageNodeSchema),
+  edges: z.array(LineageEdgeSchema),
 })
 
 const validate = (schema: z.ZodTypeAny, target: 'query' | 'param') =>
@@ -135,6 +186,235 @@ function mapGlossaryRow(row: Record<string, unknown>): GlossaryTerm {
     related_terms: parseRelatedTerms(row.related_terms),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parseLineageJson(raw: unknown): unknown | null {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    return null
+  }
+
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+function buildDefaultSelfNodeGraph(dataset: {
+  id: string
+  name: string
+  domain: string
+}): LineageGraph {
+  return {
+    version: 1,
+    nodes: [
+      {
+        id: dataset.id,
+        type: 'dataset',
+        position: { x: 0, y: 0 },
+        data: {
+          datasetId: dataset.id,
+          label: dataset.name,
+          domain: dataset.domain,
+        },
+      },
+    ],
+    edges: [],
+  }
+}
+
+function legacyNodeToDatasetInfo(item: unknown): {
+  datasetId: string
+  label?: string
+  domain?: string
+} | null {
+  if (typeof item === 'string' && item.length > 0) {
+    return { datasetId: item, label: item }
+  }
+
+  if (!isRecord(item)) {
+    return null
+  }
+
+  const datasetIdCandidates = [item.datasetId, item.id, item.dataset_id]
+  const datasetId = datasetIdCandidates.find((value): value is string => typeof value === 'string')
+  if (!datasetId || datasetId.length === 0) {
+    return null
+  }
+
+  const label = typeof item.label === 'string' && item.label.length > 0 ? item.label : undefined
+  const domain = typeof item.domain === 'string' && item.domain.length > 0 ? item.domain : undefined
+
+  return {
+    datasetId,
+    label,
+    domain,
+  }
+}
+
+function normalizeLegacyLineageToGraph(
+  input: unknown,
+  dataset: {
+    id: string
+    name: string
+    domain: string
+  },
+): LineageGraph | null {
+  if (!isRecord(input)) {
+    return null
+  }
+
+  if (Array.isArray(input.nodes) && Array.isArray(input.edges)) {
+    const parsed = LineageGraphSchema.safeParse(input)
+    return parsed.success ? parsed.data : null
+  }
+
+  const hasLegacyKeys =
+    Array.isArray(input.upstream) || Array.isArray(input.process) || Array.isArray(input.downstream)
+
+  if (!hasLegacyKeys) {
+    return null
+  }
+
+  const upstream = Array.isArray(input.upstream) ? input.upstream : []
+  const downstream = Array.isArray(input.downstream) ? input.downstream : []
+  const process = Array.isArray(input.process) ? input.process : []
+  const stepLabel =
+    process.length > 0 && typeof process[0] === 'string' && process[0].length > 0
+      ? process[0]
+      : undefined
+
+  const nodeOrder: string[] = []
+  const nodeMap = new Map<
+    string,
+    {
+      id: string
+      type: 'dataset'
+      position: { x: number; y: number }
+      data: { datasetId: string; label?: string; domain?: string }
+    }
+  >()
+
+  const pushNode = (
+    info: { datasetId: string; label?: string; domain?: string },
+    fallbackX: number,
+  ) => {
+    if (nodeMap.has(info.datasetId)) {
+      return
+    }
+
+    nodeOrder.push(info.datasetId)
+    nodeMap.set(info.datasetId, {
+      id: info.datasetId,
+      type: 'dataset',
+      position: { x: fallbackX, y: 0 },
+      data: {
+        datasetId: info.datasetId,
+        label: info.label ?? info.datasetId,
+        domain: info.domain,
+      },
+    })
+  }
+
+  const center = { datasetId: dataset.id, label: dataset.name, domain: dataset.domain }
+  pushNode(center, 0)
+
+  for (const item of upstream) {
+    const info = legacyNodeToDatasetInfo(item)
+    if (info) {
+      pushNode(info, -300)
+    }
+  }
+
+  for (const item of downstream) {
+    const info = legacyNodeToDatasetInfo(item)
+    if (info) {
+      pushNode(info, 300)
+    }
+  }
+
+  const edges: LineageGraph['edges'] = []
+  for (const item of upstream) {
+    const info = legacyNodeToDatasetInfo(item)
+    if (!info) {
+      continue
+    }
+
+    edges.push({
+      id: `${info.datasetId}->${dataset.id}`,
+      source: info.datasetId,
+      target: dataset.id,
+      data: stepLabel ? { step: stepLabel } : undefined,
+      label: stepLabel,
+    })
+  }
+
+  for (const item of downstream) {
+    const info = legacyNodeToDatasetInfo(item)
+    if (!info) {
+      continue
+    }
+
+    edges.push({
+      id: `${dataset.id}->${info.datasetId}`,
+      source: dataset.id,
+      target: info.datasetId,
+      data: stepLabel ? { step: stepLabel } : undefined,
+      label: stepLabel,
+    })
+  }
+
+  const nodes = nodeOrder.map((id, index) => {
+    const node = nodeMap.get(id)
+    if (!node) {
+      return {
+        id,
+        type: 'dataset' as const,
+        position: { x: 0, y: index * 120 },
+        data: { datasetId: id, label: id },
+      }
+    }
+
+    const y = node.position.x < 0 ? (index + 1) * 120 : node.position.x > 0 ? -(index + 1) * 120 : 0
+    return {
+      ...node,
+      position: { x: node.position.x, y },
+    }
+  })
+
+  const graph: LineageGraph = {
+    version: 1,
+    nodes,
+    edges,
+  }
+
+  return graph
+}
+
+function assertLineageGraphIntegrity(graph: LineageGraph): void {
+  const nodeIdSet = new Set<string>()
+  for (const node of graph.nodes) {
+    if (nodeIdSet.has(node.id)) {
+      throw validationError(`nodes contain duplicate id: ${node.id}`)
+    }
+    nodeIdSet.add(node.id)
+  }
+
+  const edgeIdSet = new Set<string>()
+  for (const edge of graph.edges) {
+    if (edgeIdSet.has(edge.id)) {
+      throw validationError(`edges contain duplicate id: ${edge.id}`)
+    }
+    edgeIdSet.add(edge.id)
+
+    if (!nodeIdSet.has(edge.source) || !nodeIdSet.has(edge.target)) {
+      throw validationError(`edge ${edge.id} references unknown node`)
+    }
   }
 }
 
@@ -244,6 +524,73 @@ catalogRouter.get('/datasets/:id', validate(IdParamSchema, 'param'), async (c) =
   return c.json(response)
 })
 
+catalogRouter.get(
+  '/datasets/:id/preview',
+  validate(IdParamSchema, 'param'),
+  validate(PreviewQuerySchema, 'query'),
+  async (c) => {
+    const { id } = c.req.valid('param')
+    const query = c.req.valid('query')
+    const limit = query.limit ?? 20
+
+    const dataset = await c.env.DB.prepare('SELECT id FROM catalog_datasets WHERE id = ?')
+      .bind(id)
+      .first()
+    if (!dataset) {
+      throw notFound('Catalog dataset not found')
+    }
+
+    const source = PREVIEW_SOURCE_BY_DATASET_ID[id]
+    if (!source) {
+      const response: ApiSuccess<DatasetPreviewResponse> = {
+        success: true,
+        data: {
+          datasetId: id,
+          source: {
+            kind: 'unmapped',
+            table: null,
+          },
+          columns: [],
+          rows: [],
+          meta: {
+            limit,
+            returned: 0,
+            reason: 'dataset-not-mapped',
+          },
+        },
+      }
+
+      return c.json(response)
+    }
+
+    const statement = `SELECT * FROM ${source.table} ORDER BY ${source.sortCol} DESC LIMIT ?`
+    const previewRows = await c.env.DB.prepare(statement).bind(limit).all()
+    const rows = previewRows.results as Array<Record<string, unknown>>
+    const columns = Object.keys(rows[0] ?? {})
+    const reason = rows.length === 0 ? 'empty-source' : undefined
+
+    const response: ApiSuccess<DatasetPreviewResponse> = {
+      success: true,
+      data: {
+        datasetId: id,
+        source: {
+          kind: 'mapped-table',
+          table: source.table,
+        },
+        columns,
+        rows,
+        meta: {
+          limit,
+          returned: rows.length,
+          reason,
+        },
+      },
+    }
+
+    return c.json(response)
+  },
+)
+
 catalogRouter.get('/datasets/:id/columns', validate(IdParamSchema, 'param'), async (c) => {
   const { id } = c.req.valid('param')
 
@@ -279,6 +626,83 @@ catalogRouter.get('/datasets/:id/columns', validate(IdParamSchema, 'param'), asy
 
   return c.json(response)
 })
+
+catalogRouter.get('/lineage/:datasetId', validate(LineageParamSchema, 'param'), async (c) => {
+  const { datasetId } = c.req.valid('param')
+
+  const dataset = (await c.env.DB.prepare(
+    'SELECT id, domain, name, lineage_json FROM catalog_datasets WHERE id = ?',
+  )
+    .bind(datasetId)
+    .first()) as {
+    id: string
+    domain: string
+    name: string
+    lineage_json: string | null
+  } | null
+
+  if (!dataset) {
+    throw notFound('Catalog dataset not found')
+  }
+
+  const rawLineage = parseLineageJson(dataset.lineage_json)
+  const normalized =
+    rawLineage === null
+      ? buildDefaultSelfNodeGraph(dataset)
+      : normalizeLegacyLineageToGraph(rawLineage, dataset)
+
+  if (!normalized) {
+    throw validationError('lineage_json has unsupported shape')
+  }
+
+  assertLineageGraphIntegrity(normalized)
+
+  const response: ApiSuccess<LineageGraph> = {
+    success: true,
+    data: normalized,
+  }
+
+  return c.json(response)
+})
+
+catalogRouter.put(
+  '/lineage/:datasetId',
+  validate(LineageParamSchema, 'param'),
+  validateBody(LineageGraphSchema),
+  async (c) => {
+    const { datasetId } = c.req.valid('param')
+    const graph = c.req.valid('json')
+
+    const dataset = await c.env.DB.prepare('SELECT id FROM catalog_datasets WHERE id = ?')
+      .bind(datasetId)
+      .first()
+
+    if (!dataset) {
+      throw notFound('Catalog dataset not found')
+    }
+
+    assertLineageGraphIntegrity(graph)
+
+    const payload: LineageGraph = {
+      version: 1,
+      nodes: graph.nodes,
+      edges: graph.edges,
+    }
+
+    await c.env.DB.prepare(
+      'UPDATE catalog_datasets SET lineage_json = ?, updated_at = ? WHERE id = ?',
+    )
+      .bind(JSON.stringify(payload), nowIso(), datasetId)
+      .run()
+
+    const response: ApiSuccess<LineageGraph> = {
+      success: true,
+      data: payload,
+    }
+
+    return c.json(response)
+  },
+)
 
 catalogRouter.get('/glossary', validate(GlossaryQuerySchema, 'query'), async (c) => {
   const query = c.req.valid('query')
