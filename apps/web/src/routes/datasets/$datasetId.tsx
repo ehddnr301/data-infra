@@ -1,15 +1,15 @@
-import { useState } from 'react'
+import { ErrorCard } from '@/components/error-card'
+import { DatasetDetailSkeleton } from '@/components/skeleton/dataset-skeleton'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
-import { TBody, TD, TH, THead, TR, Table } from '@/components/ui/table'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { TBody, TD, TH, THead, TR, Table } from '@/components/ui/table'
 import { useColumns, useDataset } from '@/hooks/use-catalog'
-import { Link, useParams } from '@tanstack/react-router'
-import { DatasetDetailSkeleton } from '@/components/skeleton/dataset-skeleton'
-import { ErrorCard } from '@/components/error-card'
 import type { CatalogColumn } from '@pseudolab/shared-types'
+import { Link, useParams } from '@tanstack/react-router'
+import { useState } from 'react'
 
 function parseTags(tags: string | null): string[] {
   if (!tags) return []
@@ -17,7 +17,12 @@ function parseTags(tags: string | null): string[] {
     const parsed = JSON.parse(tags)
     return Array.isArray(parsed) ? parsed : []
   } catch {
-    return tags.includes(',') ? tags.split(',').map((t) => t.trim()).filter(Boolean) : [tags.trim()]
+    return tags.includes(',')
+      ? tags
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean)
+      : [tags.trim()]
   }
 }
 
@@ -129,7 +134,12 @@ function ColumnDetailPanel({
   const examples = parseExamples(column?.examples ?? null)
 
   return (
-    <Sheet open={!!column} onOpenChange={(v) => { if (!v) onClose() }}>
+    <Sheet
+      open={!!column}
+      onOpenChange={(v) => {
+        if (!v) onClose()
+      }}
+    >
       <SheetContent>
         <SheetHeader onClose={onClose}>
           <SheetTitle>{column?.column_name}</SheetTitle>
@@ -156,9 +166,9 @@ function ColumnDetailPanel({
               <div className="space-y-1">
                 <p className="text-xs text-[var(--muted-foreground)]">예시 값</p>
                 <div className="flex flex-wrap gap-1">
-                  {examples.map((ex, i) => (
+                  {examples.map((ex) => (
                     <code
-                      key={i}
+                      key={`${column.column_name}:${ex}`}
                       className="text-xs bg-[var(--muted)] px-1.5 py-0.5 rounded font-mono"
                     >
                       {ex}
@@ -185,7 +195,9 @@ export function DatasetDetailPage() {
       <section className="space-y-4">
         <div className="flex items-center gap-2">
           <Link to="/datasets">
-            <Button variant="ghost" size="sm">← 목록</Button>
+            <Button variant="ghost" size="sm">
+              ← 목록
+            </Button>
           </Link>
         </div>
         <DatasetDetailSkeleton />
@@ -198,7 +210,9 @@ export function DatasetDetailPage() {
       <section className="space-y-4">
         <div className="flex items-center gap-2">
           <Link to="/datasets">
-            <Button variant="ghost" size="sm">← 목록</Button>
+            <Button variant="ghost" size="sm">
+              ← 목록
+            </Button>
           </Link>
         </div>
         <ErrorCard
@@ -220,7 +234,9 @@ export function DatasetDetailPage() {
       {/* Back navigation */}
       <div className="flex items-center gap-2">
         <Link to="/datasets">
-          <Button variant="ghost" size="sm">← 목록</Button>
+          <Button variant="ghost" size="sm">
+            ← 목록
+          </Button>
         </Link>
       </div>
 
@@ -236,7 +252,9 @@ export function DatasetDetailPage() {
         {tags.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {tags.map((tag) => (
-              <Badge key={tag} variant="secondary">{tag}</Badge>
+              <Badge key={tag} variant="secondary">
+                {tag}
+              </Badge>
             ))}
           </div>
         )}
@@ -246,7 +264,10 @@ export function DatasetDetailPage() {
       <Card className="p-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
           <MetaItem label="소유자" value={dataset.owner ?? '미지정'} />
-          <MetaItem label="컬럼 수" value={columnsQuery.isPending ? '...' : String(columns.length)} />
+          <MetaItem
+            label="컬럼 수"
+            value={columnsQuery.isPending ? '...' : String(columns.length)}
+          />
           <MetaItem label="생성일" value={formatDate(dataset.created_at)} />
           <MetaItem label="수정일" value={formatDate(dataset.updated_at)} />
         </div>
@@ -260,8 +281,8 @@ export function DatasetDetailPage() {
 
         {columnsQuery.isPending ? (
           <div className="space-y-2">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="h-10 bg-[var(--muted)] animate-pulse rounded" />
+            {['dataset-column-row-1', 'dataset-column-row-2', 'dataset-column-row-3'].map((key) => (
+              <div key={key} className="h-10 bg-[var(--muted)] animate-pulse rounded" />
             ))}
           </div>
         ) : columnsQuery.isError ? (
@@ -289,10 +310,7 @@ export function DatasetDetailPage() {
       </div>
 
       {/* Column detail side panel */}
-      <ColumnDetailPanel
-        column={selectedColumn}
-        onClose={() => setSelectedColumn(null)}
-      />
+      <ColumnDetailPanel column={selectedColumn} onClose={() => setSelectedColumn(null)} />
     </section>
   )
 }

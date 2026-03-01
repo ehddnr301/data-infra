@@ -1,5 +1,5 @@
-import { Hono } from 'hono'
 import type { Env } from '@pseudolab/shared-types'
+import { Hono } from 'hono'
 
 type CheckStatus = 'ok' | 'fail'
 
@@ -28,7 +28,10 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   ])
 }
 
-async function probe(name: 'd1' | 'r2' | 'kv', env: Env): Promise<{ status: CheckStatus; latencyMs?: number }> {
+async function probe(
+  name: 'd1' | 'r2' | 'kv',
+  env: Env,
+): Promise<{ status: CheckStatus; latencyMs?: number }> {
   const start = Date.now()
 
   try {

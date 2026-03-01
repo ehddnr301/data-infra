@@ -4,7 +4,7 @@ export class AppError extends Error {
   constructor(
     public status: number,
     public title: string,
-    public type: string = '/errors/internal',
+    public type = '/errors/internal',
     public detail?: string,
   ) {
     super(title)

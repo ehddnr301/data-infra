@@ -3,6 +3,10 @@ import { RootErrorComponent, RootNotFoundComponent, RootRouteComponent } from '@
 import { AboutPage } from '@/routes/about'
 import { DatasetsPage } from '@/routes/datasets'
 import { DatasetDetailPage } from '@/routes/datasets/$datasetId'
+import { GlossaryListPage } from '@/routes/glossary'
+import { GlossaryDetailPage } from '@/routes/glossary/$termId'
+import { GlossaryFormPage } from '@/routes/glossary/form'
+import { SearchPage } from '@/routes/search'
 import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 
 const rootRoute = createRootRoute({
@@ -38,9 +42,31 @@ const datasetDetailRoute = createRoute({
 const glossaryRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/glossary',
-  component: () => (
-    <p className="text-sm text-[var(--muted-foreground)]">용어집은 준비 중입니다.</p>
-  ),
+  component: GlossaryListPage,
+})
+
+const glossaryNewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/glossary/new',
+  component: GlossaryFormPage,
+})
+
+const glossaryDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/glossary/$termId',
+  component: GlossaryDetailPage,
+})
+
+const glossaryEditRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/glossary/$termId/edit',
+  component: GlossaryFormPage,
+})
+
+const searchRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/search',
+  component: SearchPage,
 })
 
 const routeTree = rootRoute.addChildren([
@@ -49,6 +75,10 @@ const routeTree = rootRoute.addChildren([
   datasetsRoute,
   datasetDetailRoute,
   glossaryRoute,
+  glossaryNewRoute,
+  glossaryDetailRoute,
+  glossaryEditRoute,
+  searchRoute,
 ])
 
 export const router = createRouter({

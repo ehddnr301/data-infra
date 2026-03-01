@@ -1,6 +1,6 @@
 import { SELF } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
-import { expectProblemJson, ProblemDetailSchema } from './helpers'
+import { ProblemDetailSchema, expectProblemJson } from './helpers'
 
 describe('CORS', () => {
   it('returns cors headers on preflight request', async () => {

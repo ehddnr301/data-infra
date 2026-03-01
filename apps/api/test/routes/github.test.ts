@@ -1,11 +1,11 @@
 import { SELF } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import {
+  ProblemDetailSchema,
   apiSuccessSchema,
   expectJson,
   expectProblemJson,
   paginatedSchema,
-  ProblemDetailSchema,
 } from '../helpers'
 
 describe('GET /api/github/events', () => {
@@ -15,9 +15,7 @@ describe('GET /api/github/events', () => {
     expect(res.status).toBe(200)
     expectJson(res)
 
-    const parsed = paginatedSchema(ProblemDetailSchema.passthrough()).safeParse(
-      await res.json(),
-    )
+    const parsed = paginatedSchema(ProblemDetailSchema.passthrough()).safeParse(await res.json())
     expect(parsed.success).toBe(true)
   })
 })
@@ -41,9 +39,7 @@ describe('GET /api/github/stats/daily', () => {
     expect(res.status).toBe(200)
     expectJson(res)
 
-    const parsed = apiSuccessSchema(ProblemDetailSchema.array()).safeParse(
-      await res.json(),
-    )
+    const parsed = apiSuccessSchema(ProblemDetailSchema.array()).safeParse(await res.json())
     expect(parsed.success).toBe(true)
   })
 })

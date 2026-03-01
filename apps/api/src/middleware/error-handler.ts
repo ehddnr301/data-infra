@@ -23,8 +23,7 @@ export function errorHandler(err: Error, c: Context): Response {
     return toProblemResponse(c, validationError(detail))
   }
 
-  const detail =
-    c.env.ENVIRONMENT === 'prod' ? undefined : err.message || 'Unknown error'
+  const detail = c.env.ENVIRONMENT === 'prod' ? undefined : err.message || 'Unknown error'
   return toProblemResponse(c, internal(detail))
 }
 

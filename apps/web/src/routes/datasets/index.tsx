@@ -1,16 +1,16 @@
-import { useState } from 'react'
-import { LayoutGrid, List } from 'lucide-react'
+import { EmptyState } from '@/components/empty-state'
+import { ErrorCard } from '@/components/error-card'
+import { DatasetListSkeleton } from '@/components/skeleton/dataset-skeleton'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { TBody, TD, TH, THead, TR, Table } from '@/components/ui/table'
 import { useDatasets } from '@/hooks/use-catalog'
-import { Link } from '@tanstack/react-router'
-import { DatasetListSkeleton } from '@/components/skeleton/dataset-skeleton'
-import { ErrorCard } from '@/components/error-card'
-import { EmptyState } from '@/components/empty-state'
 import type { CatalogDataset, DomainName } from '@pseudolab/shared-types'
+import { Link } from '@tanstack/react-router'
+import { LayoutGrid, List } from 'lucide-react'
+import { useState } from 'react'
 
 function parseTags(tags: string | null): string[] {
   if (!tags) return []
@@ -18,7 +18,12 @@ function parseTags(tags: string | null): string[] {
     const parsed = JSON.parse(tags)
     return Array.isArray(parsed) ? parsed : []
   } catch {
-    return tags.includes(',') ? tags.split(',').map((t) => t.trim()).filter(Boolean) : [tags.trim()]
+    return tags.includes(',')
+      ? tags
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean)
+      : [tags.trim()]
   }
 }
 
@@ -32,7 +37,9 @@ function DatasetCard({ dataset }: { dataset: CatalogDataset }) {
           <Badge className="shrink-0">{dataset.domain}</Badge>
         </div>
         {dataset.description && (
-          <p className="text-sm text-[var(--muted-foreground)] line-clamp-2">{dataset.description}</p>
+          <p className="text-sm text-[var(--muted-foreground)] line-clamp-2">
+            {dataset.description}
+          </p>
         )}
         {dataset.owner && (
           <p className="text-xs text-[var(--muted-foreground)]">소유자: {dataset.owner}</p>
@@ -70,11 +77,12 @@ export function DatasetsPage() {
     pageSize: 20,
   })
 
-  const filtered = data?.data.filter((d) => {
-    if (!search) return true
-    const q = search.toLowerCase()
-    return d.name.toLowerCase().includes(q) || (d.description ?? '').toLowerCase().includes(q)
-  }) ?? []
+  const filtered =
+    data?.data.filter((d) => {
+      if (!search) return true
+      const q = search.toLowerCase()
+      return d.name.toLowerCase().includes(q) || (d.description ?? '').toLowerCase().includes(q)
+    }) ?? []
 
   return (
     <section className="space-y-4">

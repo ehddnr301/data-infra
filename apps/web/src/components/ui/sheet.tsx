@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils'
 import { X } from 'lucide-react'
-import { useEffect, type HTMLAttributes } from 'react'
+import { type DialogHTMLAttributes, type HTMLAttributes, useEffect } from 'react'
 
 type SheetProps = HTMLAttributes<HTMLDivElement> & {
   open: boolean
@@ -21,37 +21,43 @@ export function Sheet({ className, open, onOpenChange, children, ...props }: She
 
   return (
     <div className={cn('fixed inset-0 z-40', className)} {...props}>
-      {/* Backdrop */}
-      <div
+      <button
+        type="button"
         className="absolute inset-0 bg-black/20"
         onClick={() => onOpenChange?.(false)}
-        aria-hidden="true"
+        aria-label="닫기"
       />
       {children}
     </div>
   )
 }
 
-export function SheetContent({ className, children, ...props }: HTMLAttributes<HTMLDivElement>) {
+export function SheetContent({
+  className,
+  children,
+  ...props
+}: DialogHTMLAttributes<HTMLDialogElement>) {
   return (
-    <div
+    <dialog
+      open
       className={cn(
         'fixed inset-y-0 right-0 z-50 w-full sm:w-96 bg-[var(--background)] border-l border-[var(--border)] shadow-lg',
         'animate-in slide-in-from-right duration-200',
-        className
+        className,
       )}
-      role="dialog"
-      aria-modal="true"
       {...props}
     >
-      <div className="flex flex-col h-full overflow-y-auto p-4">
-        {children}
-      </div>
-    </div>
+      <div className="flex flex-col h-full overflow-y-auto p-4">{children}</div>
+    </dialog>
   )
 }
 
-export function SheetHeader({ className, children, onClose, ...props }: HTMLAttributes<HTMLDivElement> & { onClose?: () => void }) {
+export function SheetHeader({
+  className,
+  children,
+  onClose,
+  ...props
+}: HTMLAttributes<HTMLDivElement> & { onClose?: () => void }) {
   return (
     <div className={cn('flex items-center justify-between mb-4', className)} {...props}>
       <div>{children}</div>

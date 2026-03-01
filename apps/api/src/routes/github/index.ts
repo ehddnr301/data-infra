@@ -1,7 +1,7 @@
 import { zValidator } from '@hono/zod-validator'
+import type { ApiSuccess, Env, PaginatedResponse } from '@pseudolab/shared-types'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import type { ApiSuccess, Env, PaginatedResponse } from '@pseudolab/shared-types'
 import { notFound, validationError } from '../../lib/errors'
 
 const githubRouter = new Hono<{ Bindings: Env }>()

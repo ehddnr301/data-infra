@@ -1,5 +1,5 @@
-import { z } from 'zod'
 import { expect } from 'vitest'
+import { z } from 'zod'
 
 export const ProblemDetailSchema = z.object({
   type: z.string(),

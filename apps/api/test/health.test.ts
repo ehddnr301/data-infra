@@ -1,6 +1,6 @@
 import { SELF } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
-import { expectJson, LivenessSchema, ReadinessSchema } from './helpers'
+import { LivenessSchema, ReadinessSchema, expectJson } from './helpers'
 
 describe('GET /api/health', () => {
   it('returns liveness response contract', async () => {

@@ -16,6 +16,8 @@ type RequestOptions = {
   params?: Record<string, string | number | undefined>
 }
 
+type JsonBody = Record<string, unknown>
+
 export async function apiGet<T>(path: string, options?: RequestOptions): Promise<T> {
   const url = new URL(`/api${path}`, API_BASE)
 
@@ -35,4 +37,38 @@ export async function apiGet<T>(path: string, options?: RequestOptions): Promise
   }
 
   return res.json() as Promise<T>
+}
+
+async function requestWithBody<T>(
+  method: 'POST' | 'PUT' | 'DELETE',
+  path: string,
+  body?: JsonBody,
+): Promise<T> {
+  const url = new URL(`/api${path}`, API_BASE)
+  const res = await fetch(url.toString(), {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  })
+
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null)
+    throw new ApiError(res.status, payload)
+  }
+
+  return res.json() as Promise<T>
+}
+
+export function apiPost<T>(path: string, body: JsonBody): Promise<T> {
+  return requestWithBody<T>('POST', path, body)
+}
+
+export function apiPut<T>(path: string, body: JsonBody): Promise<T> {
+  return requestWithBody<T>('PUT', path, body)
+}
+
+export function apiDelete<T>(path: string): Promise<T> {
+  return requestWithBody<T>('DELETE', path)
 }
