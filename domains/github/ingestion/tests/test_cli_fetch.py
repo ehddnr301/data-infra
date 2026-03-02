@@ -325,7 +325,9 @@ class TestFetchExecution:
         assert "filtered=2" in result.output
 
     @patch("gharchive_etl.downloader.time.sleep")
-    def test_404_continues(self, mock_sleep: MagicMock, tmp_path: Path, httpx_mock: HTTPXMock) -> None:
+    def test_404_continues(
+        self, mock_sleep: MagicMock, tmp_path: Path, httpx_mock: HTTPXMock
+    ) -> None:
         """404 시간대를 건너뛰고 다음 시간대 계속 처리."""
         config_path = _write_config(tmp_path)
 
@@ -354,7 +356,7 @@ class TestFetchExecution:
             ],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "filtered=1" in result.output
 
     def test_failed_hour_exit_code_1(self, tmp_path: Path, httpx_mock: HTTPXMock) -> None:

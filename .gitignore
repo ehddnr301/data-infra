@@ -36,4 +36,22 @@ infra/.terraform.tfstate.lock.info
 # OS
 .DS_Store
 .omc
-ticket-system/
+# ticket-system/
+
+# Airflow
+.venv-airflow/
+
+# ETL temp data
+domains/github/ingestion/data/*.jsonl
+domains/github/ingestion/data/*.json.gz
+!domains/github/ingestion/data/.gitkeep
+
+# Discord ETL data
+domains/discord/ingestion/data/*.jsonl
+domains/discord/ingestion/data/*.json.gz
+!domains/discord/ingestion/data/.gitkeep
+
+domains/github/ingestion/data/rest-api/*.jsonl
+domains/github/ingestion/logs/*.log
+
+domains/discord/ingestion/data/**/*.jsonl

@@ -11,11 +11,17 @@ import {
 } from '../helpers'
 
 const db = (env as unknown as Env).DB
+const INTERNAL_API_TOKEN = (env as unknown as Env).INTERNAL_API_TOKEN ?? 'dev-internal-token'
 
 const TERM_ALPHA_ID = '0194f65f-7d75-7b1f-8e7a-1f3b2c4d5e6f'
 const TERM_BETA_ID = '0194f65f-7d75-7c1f-9a7b-2f3b2c4d5e6f'
 const TERM_GAMMA_ID = '0194f65f-7d75-7d1f-af7b-3f3b2c4d5e6f'
 const TERM_DISCORD_ID = '0194f65f-7d75-7e1f-8b7b-4f3b2c4d5e6f'
+
+const InternalAuthHeaders = {
+  'Content-Type': 'application/json',
+  Authorization: `Bearer ${INTERNAL_API_TOKEN}`,
+}
 
 const GlossaryTermSchema = z.object({
   id: z.string(),
@@ -71,6 +77,23 @@ const DatasetPreviewResponseSchema = z.object({
     limit: z.number(),
     returned: z.number(),
     reason: z.enum(['dataset-not-mapped', 'empty-source']).optional(),
+  }),
+})
+
+const SnapshotApplyResultSchema = z.object({
+  applied: z.literal(true),
+  dataset: z.object({
+    added: z.number(),
+    updated: z.number(),
+    unchanged: z.number(),
+  }),
+  columns: z.object({
+    added: z.number(),
+    updated: z.number(),
+    unchanged: z.number(),
+  }),
+  lineage: z.object({
+    updated: z.boolean(),
   }),
 })
 
@@ -237,6 +260,57 @@ describe('datasets routes', () => {
     expect(parsed.data.type).toBe('/errors/validation')
   })
 
+  it('normalizes mixed-case domain query values', async () => {
+    const res = await SELF.fetch('http://example.com/api/catalog/datasets?domain=Discord')
+
+    expect(res.status).toBe(200)
+    expectJson(res)
+
+    const parsed = paginatedSchema(z.object({ domain: z.string() }).passthrough()).safeParse(
+      await res.json(),
+    )
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) {
+      return
+    }
+
+    expect(parsed.data.data.length).toBeGreaterThan(0)
+    expect(parsed.data.data.every((dataset) => dataset.domain === 'discord')).toBe(true)
+  })
+
+  it('normalizes trimmed domain query values', async () => {
+    const res = await SELF.fetch('http://example.com/api/catalog/datasets?domain=discord%20')
+
+    expect(res.status).toBe(200)
+    expectJson(res)
+
+    const parsed = paginatedSchema(z.object({ domain: z.string() }).passthrough()).safeParse(
+      await res.json(),
+    )
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) {
+      return
+    }
+
+    expect(parsed.data.data.length).toBeGreaterThan(0)
+    expect(parsed.data.data.every((dataset) => dataset.domain === 'discord')).toBe(true)
+  })
+
+  it('returns 400 for invalid domain query value', async () => {
+    const res = await SELF.fetch('http://example.com/api/catalog/datasets?domain=invalid')
+
+    expect(res.status).toBe(400)
+    expectProblemJson(res)
+
+    const parsed = ProblemDetailSchema.safeParse(await res.json())
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) {
+      return
+    }
+
+    expect(parsed.data.type).toBe('/errors/validation')
+  })
+
   it('returns preview rows for mapped dataset with default limit', async () => {
     const res = await SELF.fetch(
       'http://example.com/api/catalog/datasets/discord.messages.v1/preview',
@@ -317,6 +391,238 @@ describe('datasets routes', () => {
     expect(parsed.data.data.rows).toEqual([])
     expect(parsed.data.data.columns).toEqual([])
     expect(parsed.data.data.meta.reason).toBe('dataset-not-mapped')
+  })
+})
+
+describe('dataset snapshot route', () => {
+  it('requires internal bearer token', async () => {
+    const res = await SELF.fetch(
+      'http://example.com/api/catalog/datasets/github.push-events.v1/snapshot',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataset: {}, columns: [] }),
+      },
+    )
+
+    expect(res.status).toBe(401)
+    expectProblemJson(res)
+  })
+
+  it('creates new dataset and columns', async () => {
+    const payload = {
+      dataset: {
+        id: 'github.push-events.v1',
+        domain: 'github',
+        name: 'Push Events',
+        description: 'Push events dataset',
+        schema_json: { version: 1, kind: 'dataset' },
+        owner: 'etl',
+        tags: ['github', 'events'],
+      },
+      columns: [
+        {
+          column_name: 'event_id',
+          data_type: 'TEXT',
+          description: 'Event identifier',
+          is_pii: false,
+          examples: ['evt_1'],
+        },
+        {
+          column_name: 'user_login',
+          data_type: 'TEXT',
+          description: 'User login',
+          is_pii: false,
+          examples: null,
+        },
+      ],
+    }
+
+    const res = await SELF.fetch(
+      'http://example.com/api/catalog/datasets/github.push-events.v1/snapshot',
+      {
+        method: 'PUT',
+        headers: InternalAuthHeaders,
+        body: JSON.stringify(payload),
+      },
+    )
+
+    expect(res.status).toBe(200)
+    expectJson(res)
+
+    const parsed = apiSuccessSchema(SnapshotApplyResultSchema).safeParse(await res.json())
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) {
+      return
+    }
+
+    expect(parsed.data.data.dataset).toEqual({ added: 1, updated: 0, unchanged: 0 })
+    expect(parsed.data.data.columns).toEqual({ added: 2, updated: 0, unchanged: 0 })
+
+    const dataset = await db
+      .prepare(
+        'SELECT id, domain, name, schema_json, owner, tags FROM catalog_datasets WHERE id = ?',
+      )
+      .bind('github.push-events.v1')
+      .first<Record<string, unknown>>()
+    expect(dataset?.id).toBe('github.push-events.v1')
+    expect(dataset?.domain).toBe('github')
+    expect(dataset?.name).toBe('Push Events')
+    expect(dataset?.owner).toBe('etl')
+    expect(dataset?.schema_json).toBe('{"version":1,"kind":"dataset"}')
+    expect(dataset?.tags).toBe('["github","events"]')
+
+    const columns = await db
+      .prepare(
+        'SELECT column_name, data_type FROM catalog_columns WHERE dataset_id = ? ORDER BY column_name',
+      )
+      .bind('github.push-events.v1')
+      .all<Record<string, unknown>>()
+    expect(columns.results).toHaveLength(2)
+    expect(columns.results[0]?.column_name).toBe('event_id')
+    expect(columns.results[1]?.column_name).toBe('user_login')
+  })
+
+  it('updates dataset while preserving created_at and keeps non-included columns', async () => {
+    await db
+      .prepare(
+        'INSERT INTO catalog_columns (dataset_id, column_name, data_type, description, is_pii, examples) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .bind('ds.github.repo.v1', 'legacy_col', 'TEXT', 'legacy', 0, null)
+      .run()
+
+    await db
+      .prepare(
+        'INSERT INTO catalog_columns (dataset_id, column_name, data_type, description, is_pii, examples) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .bind('ds.github.repo.v1', 'repo_name', 'TEXT', 'old', 0, null)
+      .run()
+
+    const before = await db
+      .prepare('SELECT created_at FROM catalog_datasets WHERE id = ?')
+      .bind('ds.github.repo.v1')
+      .first<Record<string, unknown>>()
+
+    const payload = {
+      dataset: {
+        id: 'ds.github.repo.v1',
+        domain: 'github',
+        name: 'GitHub Repo Dataset Updated',
+        description: 'Updated dataset',
+        schema_json: { version: 2 },
+        owner: 'platform',
+        tags: 'github,updated',
+      },
+      columns: [
+        {
+          column_name: 'repo_name',
+          data_type: 'TEXT',
+          description: 'Repository name',
+          is_pii: false,
+          examples: ['pseudolab-cloudflare'],
+        },
+        {
+          column_name: 'event_type',
+          data_type: 'TEXT',
+          description: 'Event type',
+          is_pii: false,
+          examples: null,
+        },
+      ],
+    }
+
+    const res = await SELF.fetch(
+      'http://example.com/api/catalog/datasets/ds.github.repo.v1/snapshot',
+      {
+        method: 'PUT',
+        headers: InternalAuthHeaders,
+        body: JSON.stringify(payload),
+      },
+    )
+
+    expect(res.status).toBe(200)
+    const parsed = apiSuccessSchema(SnapshotApplyResultSchema).safeParse(await res.json())
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) {
+      return
+    }
+    expect(parsed.data.data.dataset).toEqual({ added: 0, updated: 1, unchanged: 0 })
+    expect(parsed.data.data.columns).toEqual({ added: 1, updated: 1, unchanged: 0 })
+
+    const after = await db
+      .prepare('SELECT created_at, name, owner, tags FROM catalog_datasets WHERE id = ?')
+      .bind('ds.github.repo.v1')
+      .first<Record<string, unknown>>()
+    expect(after?.created_at).toBe(before?.created_at)
+    expect(after?.name).toBe('GitHub Repo Dataset Updated')
+    expect(after?.owner).toBe('platform')
+    expect(after?.tags).toBe('github,updated')
+
+    const legacyCol = await db
+      .prepare('SELECT column_name FROM catalog_columns WHERE dataset_id = ? AND column_name = ?')
+      .bind('ds.github.repo.v1', 'legacy_col')
+      .first<Record<string, unknown>>()
+    expect(legacyCol?.column_name).toBe('legacy_col')
+  })
+
+  it('validates dataset id format, id mismatch, and domain enum', async () => {
+    const invalidIdPayload = {
+      dataset: {
+        id: 'bad/id',
+        domain: 'github',
+        name: 'Bad',
+        description: 'Bad',
+      },
+      columns: [],
+    }
+
+    const invalidIdRes = await SELF.fetch(
+      'http://example.com/api/catalog/datasets/bad/id/snapshot',
+      {
+        method: 'PUT',
+        headers: InternalAuthHeaders,
+        body: JSON.stringify(invalidIdPayload),
+      },
+    )
+    expect(invalidIdRes.status).toBe(404)
+
+    const mismatchRes = await SELF.fetch(
+      'http://example.com/api/catalog/datasets/github.valid.v1/snapshot',
+      {
+        method: 'PUT',
+        headers: InternalAuthHeaders,
+        body: JSON.stringify({
+          dataset: {
+            id: 'github.other.v1',
+            domain: 'github',
+            name: 'Mismatch',
+            description: 'Mismatch',
+          },
+          columns: [],
+        }),
+      },
+    )
+    expect(mismatchRes.status).toBe(400)
+    expectProblemJson(mismatchRes)
+
+    const invalidDomainRes = await SELF.fetch(
+      'http://example.com/api/catalog/datasets/github.valid.v1/snapshot',
+      {
+        method: 'PUT',
+        headers: InternalAuthHeaders,
+        body: JSON.stringify({
+          dataset: {
+            id: 'github.valid.v1',
+            domain: 'invalid',
+            name: 'Mismatch',
+            description: 'Mismatch',
+          },
+          columns: [],
+        }),
+      },
+    )
+    expect(invalidDomainRes.status).toBe(400)
+    expectProblemJson(invalidDomainRes)
   })
 })
 

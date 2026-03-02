@@ -390,9 +390,7 @@ class TestProcessHour:
     def test_404_returns_empty_with_skip_flag(self, httpx_mock: HTTPXMock) -> None:
         """404 시 빈 결과 + skipped_404=True + 에러 없음 (MAX_404_RETRIES+1번 모두 404)."""
         for _ in range(MAX_404_RETRIES + 1):
-            httpx_mock.add_response(
-                url=f"{BASE_URL}/2024-01-15-10.json.gz", status_code=404
-            )
+            httpx_mock.add_response(url=f"{BASE_URL}/2024-01-15-10.json.gz", status_code=404)
 
         config = _app_config()
         with patch("gharchive_etl.downloader.time.sleep"):
@@ -401,7 +399,8 @@ class TestProcessHour:
         assert filtered == []
         assert stats.downloaded == 0
         assert stats.skipped_404 is True
-        assert stats.error is None
+        assert stats.error is not None
+        assert "Hour file not found after" in stats.error
 
     def test_stream_error_retry(self, httpx_mock: HTTPXMock) -> None:
         """스트림 중단 후 process_hour 재시도 → 중복 없이 성공."""
@@ -474,12 +473,11 @@ class Test404Retry:
     """process_hour 404 재시도 로직 테스트."""
 
     def test_404_retries_then_succeeds(self, httpx_mock: HTTPXMock) -> None:
-        """첫 2번 404, 3번째 성공 → 정상 결과 반환."""
+        """404 재시도 후 성공하면 정상 결과를 반환한다."""
         events = [_sample_event("1", "pseudolab")]
         gz_data = _make_ndjson_gz(events)
 
-        # 첫 2번: 404, 마지막: 성공
-        httpx_mock.add_response(url=f"{BASE_URL}/2024-01-15-10.json.gz", status_code=404)
+        # 첫 번째: 404, 두 번째: 성공
         httpx_mock.add_response(url=f"{BASE_URL}/2024-01-15-10.json.gz", status_code=404)
         httpx_mock.add_response(url=f"{BASE_URL}/2024-01-15-10.json.gz", content=gz_data)
 
@@ -495,9 +493,7 @@ class Test404Retry:
         """MAX_404_RETRIES+1번 모두 404 → skipped_404=True, 빈 결과."""
         # MAX_404_RETRIES+1번 모두 404 응답 등록
         for _ in range(MAX_404_RETRIES + 1):
-            httpx_mock.add_response(
-                url=f"{BASE_URL}/2024-01-15-10.json.gz", status_code=404
-            )
+            httpx_mock.add_response(url=f"{BASE_URL}/2024-01-15-10.json.gz", status_code=404)
 
         config = _app_config()
         with patch("gharchive_etl.downloader.time.sleep"):
@@ -505,7 +501,8 @@ class Test404Retry:
 
         assert filtered == []
         assert stats.skipped_404 is True
-        assert stats.error is None
+        assert stats.error is not None
+        assert "Hour file not found after" in stats.error
 
     def test_404_retry_delay(self, httpx_mock: HTTPXMock) -> None:
         """404 발생 시 RETRY_404_DELAY_SEC 간격으로 sleep이 호출된다."""

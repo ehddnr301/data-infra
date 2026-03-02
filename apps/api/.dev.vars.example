@@ -9,3 +9,7 @@
 
 # 앱 환경 설정
 # ENVIRONMENT=dev
+
+# 내부 동기화 API 보호 토큰
+# CATALOG pipeline -> API snapshot endpoint 호출 시 Bearer 토큰으로 사용
+# INTERNAL_API_TOKEN=replace-with-strong-random-token

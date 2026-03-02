@@ -10,9 +10,10 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { TBody, TD, TH, THead, TR, Table } from '@/components/ui/table'
 import { useColumns, useDataset, useDatasetPreview } from '@/hooks/use-catalog'
 import { useLineage, useSaveLineage } from '@/hooks/use-lineage'
+import { ApiError } from '@/lib/api-client'
 import type { CatalogColumn, LineageGraph } from '@pseudolab/shared-types'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 
 function parseTags(tags: string | null): string[] {
   if (!tags) return []
@@ -306,6 +307,8 @@ export function DatasetDetailPage() {
   }
 
   if (datasetQuery.isError) {
+    const isNotFound = datasetQuery.error instanceof ApiError && datasetQuery.error.status === 404
+
     return (
       <section className="space-y-4">
         <div className="flex items-center gap-2">
@@ -315,10 +318,23 @@ export function DatasetDetailPage() {
             </Button>
           </Link>
         </div>
-        <ErrorCard
-          message="데이터셋 정보를 불러올 수 없습니다."
-          onRetry={() => datasetQuery.refetch()}
-        />
+        {isNotFound ? (
+          <Card className="p-6">
+            <div className="space-y-4 text-center">
+              <p className="text-sm text-[var(--muted-foreground)]">데이터셋을 찾을 수 없습니다.</p>
+              <div className="flex justify-center">
+                <Link to="/datasets">
+                  <Button size="sm">목록으로 이동</Button>
+                </Link>
+              </div>
+            </div>
+          </Card>
+        ) : (
+          <ErrorCard
+            message="데이터셋 정보를 불러올 수 없습니다."
+            onRetry={() => datasetQuery.refetch()}
+          />
+        )}
       </section>
     )
   }
@@ -330,7 +346,7 @@ export function DatasetDetailPage() {
   const tags = parseTags(dataset.tags)
   const preview = previewQuery.data?.data
 
-  const sortedPreviewRows = useMemo(() => {
+  const sortedPreviewRows = (() => {
     const rows = preview?.rows ?? []
     if (!previewSort) {
       return rows
@@ -342,7 +358,7 @@ export function DatasetDetailPage() {
       return previewSort.direction === 'asc' ? result : -result
     })
     return nextRows
-  }, [preview?.rows, previewSort])
+  })()
 
   const onChangeTab = (nextTab: DatasetDetailTab) => {
     setActiveTab(nextTab)

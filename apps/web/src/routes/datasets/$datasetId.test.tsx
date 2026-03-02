@@ -1,3 +1,4 @@
+import { ApiError } from '@/lib/api-client'
 import { DatasetDetailPage } from '@/routes/datasets/$datasetId'
 import { fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
@@ -30,6 +31,7 @@ import { useLineage, useSaveLineage } from '@/hooks/use-lineage'
 const baseDatasetQuery = {
   isPending: false,
   isError: false,
+  error: null,
   data: {
     data: {
       id: 'discord.messages.v1',
@@ -114,6 +116,36 @@ describe('DatasetDetailPage preview tab', () => {
       'discord.messages.v1',
       expect.objectContaining({ limit: 20, enabled: true }),
     )
+  })
+
+  it('does not crash when dataset query transitions from pending to success', () => {
+    ;(useDataset as Mock)
+      .mockImplementationOnce(() => ({
+        ...baseDatasetQuery,
+        isPending: true,
+        data: undefined,
+      }))
+      .mockImplementation(() => baseDatasetQuery)
+    ;(useDatasetPreview as Mock).mockReturnValue({
+      isPending: false,
+      isError: false,
+      data: {
+        data: {
+          datasetId: 'discord.messages.v1',
+          source: { kind: 'mapped-table', table: 'discord_messages' },
+          columns: ['id'],
+          rows: [{ id: 1 }],
+          meta: { limit: 20, returned: 1 },
+        },
+      },
+      refetch: vi.fn(),
+    })
+
+    const { rerender } = render(<DatasetDetailPage />)
+
+    expect(screen.getByRole('button', { name: '← 목록' })).toBeInTheDocument()
+    expect(() => rerender(<DatasetDetailPage />)).not.toThrow()
+    expect(screen.getByText('Discord Messages')).toBeInTheDocument()
   })
 
   it('updates preview limit selector and hint text', () => {
@@ -209,5 +241,68 @@ describe('DatasetDetailPage preview tab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
 
     expect(screen.getByText('프리뷰 준비중')).toBeInTheDocument()
+  })
+})
+
+describe('DatasetDetailPage error handling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(useColumns as Mock).mockReturnValue(baseColumnsQuery)
+    ;(useDatasetPreview as Mock).mockReturnValue({
+      isPending: false,
+      isError: false,
+      data: {
+        data: {
+          datasetId: 'discord.messages.v1',
+          source: { kind: 'unmapped', table: null },
+          columns: [],
+          rows: [],
+          meta: { limit: 20, returned: 0 },
+        },
+      },
+      refetch: vi.fn(),
+    })
+    ;(useLineage as Mock).mockReturnValue(baseLineageQuery)
+    ;(useSaveLineage as Mock).mockReturnValue(baseSaveLineageMutation)
+  })
+
+  it('shows not-found message and list CTA for 404 errors', () => {
+    ;(useDataset as Mock).mockReturnValue({
+      ...baseDatasetQuery,
+      isError: true,
+      error: new ApiError(404, {
+        type: '/errors/not-found',
+        title: 'Not Found',
+        status: 404,
+        detail: 'Catalog dataset not found',
+        instance: '/api/catalog/datasets/not-found',
+      }),
+    })
+
+    render(<DatasetDetailPage />)
+
+    expect(screen.getByText('데이터셋을 찾을 수 없습니다.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '목록으로 이동' })).toBeInTheDocument()
+    expect(screen.queryByText('다시 시도')).not.toBeInTheDocument()
+  })
+
+  it('shows generic error card for non-404 errors', () => {
+    ;(useDataset as Mock).mockReturnValue({
+      ...baseDatasetQuery,
+      isError: true,
+      error: new ApiError(500, {
+        type: '/errors/internal',
+        title: 'Internal Server Error',
+        status: 500,
+        detail: 'Unexpected failure',
+        instance: '/api/catalog/datasets/discord.messages.v1',
+      }),
+    })
+
+    render(<DatasetDetailPage />)
+
+    expect(screen.getByText('데이터셋 정보를 불러올 수 없습니다.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '다시 시도' })).toBeInTheDocument()
+    expect(screen.queryByText('데이터셋을 찾을 수 없습니다.')).not.toBeInTheDocument()
   })
 })

@@ -11,6 +11,9 @@ export default defineWorkersConfig({
           d1Databases: ['DB'],
           kvNamespaces: ['CACHE'],
           r2Buckets: ['ARCHIVE_BUCKET'],
+          bindings: {
+            INTERNAL_API_TOKEN: 'test-internal-token',
+          },
         },
       },
     },

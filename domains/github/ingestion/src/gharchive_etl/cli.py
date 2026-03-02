@@ -17,6 +17,7 @@ import click
 import orjson
 
 from gharchive_etl.config import load_config
+from gharchive_etl.catalog_sync import SyncSummary, sync_catalog as run_catalog_sync
 from gharchive_etl.d1 import (
     _validate_d1_auth,
     compute_daily_stats_from_dl,
@@ -286,11 +287,18 @@ def _load_jsonl(path: Path) -> tuple[list[GitHubEvent], int]:
     default="all",
     help="업로드 대상 (r2, d1, all 중 택1, 기본: all)",
 )
-@click.option("--source", type=click.Choice(["gharchive", "rest_api"]),
-              default="gharchive", help="데이터 소스 (기본: gharchive)")
-@click.option("--input-file", default=None,
-              type=click.Path(exists=True, path_type=Path),
-              help="특정 JSONL 파일 직접 지정 (--date 필수)")
+@click.option(
+    "--source",
+    type=click.Choice(["gharchive", "rest_api"]),
+    default="gharchive",
+    help="데이터 소스 (기본: gharchive)",
+)
+@click.option(
+    "--input-file",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="특정 JSONL 파일 직접 지정 (--date 필수)",
+)
 @click.option("--dry-run", is_flag=True, default=False, help="실제 업로드 없이 시뮬레이션")
 @click.option(
     "--config",
@@ -367,7 +375,11 @@ def upload(
 
     for batch_date in dates:
         date_str = batch_date.strftime("%Y-%m-%d")
-        jsonl_path = input_file if input_file else input_dir / f"{date_str}.jsonl"
+        if input_file:
+            jsonl_path = input_file
+        else:
+            assert input_dir is not None
+            jsonl_path = input_dir / f"{date_str}.jsonl"
 
         if not jsonl_path.exists():
             logger.warning("JSONL file not found, skipping: %s", jsonl_path)
@@ -392,7 +404,11 @@ def upload(
             click.echo(f"  [R2] uploading {len(events)} events...")
             prefix_override = config.rest_api.r2_prefix if source == "rest_api" else None
             r2_result = upload_events_to_r2(
-                events, date_str, config.r2, dry_run=dry_run, prefix_override=prefix_override,
+                events,
+                date_str,
+                config.r2,
+                dry_run=dry_run,
+                prefix_override=prefix_override,
             )
             click.echo(
                 f"  [R2] files={r2_result.files_uploaded}, "
@@ -611,8 +627,12 @@ def check_usage(
     default="all",
     help="수집 우선순위 (1=코드, 2=토론, 3=프로필/위키, all=전체)",
 )
-@click.option("--date", "single_date", default=None, help="특정 날짜의 이벤트만 enrichment (예: 2024-01-15)")
-@click.option("--dry-run", is_flag=True, default=False, help="실제 API 호출/업로드 없이 수집 대상만 확인")
+@click.option(
+    "--date", "single_date", default=None, help="특정 날짜의 이벤트만 enrichment (예: 2024-01-15)"
+)
+@click.option(
+    "--dry-run", is_flag=True, default=False, help="실제 API 호출/업로드 없이 수집 대상만 확인"
+)
 @click.option(
     "--config",
     "config_path",
@@ -703,9 +723,7 @@ def enrich(
                 all_progress.extend(results)
             elif p == "3":
                 click.echo("[enrich] Priority 3: 프로필 & 위키")
-                results = enrich_priority_3(
-                    api, config, dry_run=dry_run, on_progress=_on_progress
-                )
+                results = enrich_priority_3(api, config, dry_run=dry_run, on_progress=_on_progress)
                 all_progress.extend(results)
 
             rate = api.rate_remaining
@@ -743,10 +761,18 @@ def enrich(
 
 
 @main.command("rest-fetch")
-@click.option("--output-jsonl", required=True, type=click.Path(path_type=Path),
-              help="수집한 이벤트를 저장할 JSONL 파일 경로")
-@click.option("--backfill", is_flag=True, default=False,
-              help="백필 모드: ETag 무시, 모든 org에서 repo 보충 강제 실행")
+@click.option(
+    "--output-jsonl",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="수집한 이벤트를 저장할 JSONL 파일 경로",
+)
+@click.option(
+    "--backfill",
+    is_flag=True,
+    default=False,
+    help="백필 모드: ETag 무시, 모든 org에서 repo 보충 강제 실행",
+)
 @click.option("--dry-run", is_flag=True, default=False, help="시뮬레이션 모드")
 @click.option(
     "--config",
@@ -820,6 +846,85 @@ def rest_fetch(
         api.close()
 
 
+@main.command("sync-catalog")
+@click.option("--date", "single_date", default=None, help="동기화 기준 날짜 (YYYY-MM-DD, 선택)")
+@click.option("--dry-run", is_flag=True, default=False, help="실제 API 호출 없이 payload만 생성")
+@click.option(
+    "--status-file",
+    default=None,
+    type=click.Path(path_type=Path),
+    help="동기화 결과 JSON 파일 출력 경로",
+)
+@click.option(
+    "--config",
+    "config_path",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="설정 파일 경로",
+)
+@click.option("--json-log/--no-json-log", default=True, help="JSON 로그 포맷 (기본: 활성)")
+def sync_catalog(
+    single_date: str | None,
+    dry_run: bool,
+    status_file: Path | None,
+    config_path: Path | None,
+    json_log: bool,
+) -> None:
+    setup_logging(json_format=json_log)
+    summary = SyncSummary()
+    aggregated_errors: list[str] = []
+    batch_date = single_date or datetime.utcnow().strftime("%Y-%m-%d")
+
+    try:
+        if single_date:
+            _parse_date(single_date)
+
+        _ = load_config(config_path)
+
+        base_url = os.environ.get("CATALOG_API_BASE_URL", "").strip()
+        token = os.environ.get("CATALOG_API_TOKEN", "").strip()
+
+        if not base_url:
+            aggregated_errors.append("CATALOG_API_BASE_URL is not set")
+
+        if not dry_run and not token:
+            aggregated_errors.append("CATALOG_API_TOKEN is not set")
+
+        if not aggregated_errors:
+            summary = run_catalog_sync(
+                base_url=base_url,
+                token=token if token else "dry-run-token",
+                dry_run=dry_run,
+            )
+    except Exception as exc:
+        aggregated_errors.append(f"sync-catalog execution error: {exc}")
+
+    for item in summary.errors:
+        aggregated_errors.append(f"{item.dataset_id} [{item.stage}] {item.message}")
+
+    summary_line = (
+        f"[sync-catalog] complete: date={batch_date}, total={summary.datasets_total}, "
+        f"succeeded={summary.datasets_succeeded}, errors={len(aggregated_errors)}"
+    )
+    click.echo(summary_line)
+    logger.info(summary_line)
+
+    for error in aggregated_errors:
+        logger.warning("[sync-catalog] %s", error)
+        click.echo(f"[sync-catalog] ERROR: {error}", err=True)
+
+    if status_file:
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "batch_date": batch_date,
+            "dry_run": dry_run,
+            "datasets_total": summary.datasets_total,
+            "datasets_succeeded": summary.datasets_succeeded,
+            "errors": aggregated_errors,
+        }
+        status_file.write_bytes(orjson.dumps(payload, option=orjson.OPT_INDENT_2))
+
+
 @main.command("sync-cache")
 @click.option(
     "--config",
@@ -846,8 +951,7 @@ def sync_cache(config_path: Path | None) -> None:
 
     if not account_id or not api_token:
         click.echo(
-            "[sync-cache] CLOUDFLARE_ACCOUNT_ID 또는 CLOUDFLARE_API_TOKEN이 "
-            "설정되지 않았습니다.",
+            "[sync-cache] CLOUDFLARE_ACCOUNT_ID 또는 CLOUDFLARE_API_TOKEN이 설정되지 않았습니다.",
             err=True,
         )
         sys.exit(1)

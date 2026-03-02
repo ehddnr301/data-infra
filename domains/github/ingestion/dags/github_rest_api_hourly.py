@@ -56,13 +56,59 @@ DEFAULT_ARGS = {
     default_args=DEFAULT_ARGS,
 )
 def github_rest_api_hourly():
+    @task(task_id="resolve_run_ds")
+    def resolve_run_ds(**context) -> str:
+        logical_date = context.get("logical_date")
+        if logical_date is not None:
+            return logical_date.strftime("%Y-%m-%d")
+
+        dag_run = context.get("dag_run")
+        dag_run_logical_date = getattr(dag_run, "logical_date", None)
+        if dag_run_logical_date is not None:
+            return dag_run_logical_date.strftime("%Y-%m-%d")
+
+        run_id = context.get("run_id")
+        if isinstance(run_id, str) and "__" in run_id:
+            _, _, timestamp_part = run_id.partition("__")
+            try:
+                return pendulum.parse(timestamp_part).strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
+        raise ValueError("run ds를 컨텍스트에서 결정할 수 없습니다")
+
+    @task(task_id="resolve_run_hour")
+    def resolve_run_hour(**context) -> str:
+        logical_date = context.get("logical_date")
+        if logical_date is not None:
+            return logical_date.strftime("%H")
+
+        dag_run = context.get("dag_run")
+        dag_run_logical_date = getattr(dag_run, "logical_date", None)
+        if dag_run_logical_date is not None:
+            return dag_run_logical_date.strftime("%H")
+
+        run_id = context.get("run_id")
+        if isinstance(run_id, str) and "__" in run_id:
+            _, _, timestamp_part = run_id.partition("__")
+            try:
+                return pendulum.parse(timestamp_part).strftime("%H")
+            except Exception:
+                pass
+
+        raise ValueError("run hour를 컨텍스트에서 결정할 수 없습니다")
+
+    run_ds_template = "{{ ti.xcom_pull(task_ids='resolve_run_ds') }}"
+    run_hour_template = "{{ ti.xcom_pull(task_ids='resolve_run_hour') }}"
+    run_ds = resolve_run_ds()
+    run_hour = resolve_run_hour()
 
     # ── Task 1: rest_fetch (REST API 이벤트 수집) ──
     rest_fetch = BashOperator(
         task_id="rest_fetch",
         bash_command=(
             "gharchive-etl rest-fetch "
-            f"--output-jsonl {DATA_DIR}/{{{{ data_interval_start | ds }}}}-{{{{ data_interval_start.strftime('%H') }}}}.jsonl "
+            f"--output-jsonl {DATA_DIR}/{run_ds_template}-{run_hour_template}.jsonl "
             f"--config {CONFIG_PATH} "
             "--json-log"
         ),
@@ -72,34 +118,32 @@ def github_rest_api_hourly():
 
     # ── Task 2: validate (JSONL 파일 검증) ──
     @task.short_circuit()
-    def validate(**context) -> bool:
+    def validate(run_ds: str, run_hour: str) -> bool:
         """JSONL 파일 존재 및 비어있지 않음 확인."""
-        ds = context["data_interval_start"].strftime("%Y-%m-%d")
-        hour = context["data_interval_start"].strftime("%H")
-        jsonl_file = DATA_DIR / f"{ds}-{hour}.jsonl"
+        jsonl_file = DATA_DIR / f"{run_ds}-{run_hour}.jsonl"
 
         if not jsonl_file.exists():
-            print(f"[validate] {ds}-{hour}: JSONL 파일 없음 — downstream 스킵")
+            print(f"[validate] {run_ds}-{run_hour}: JSONL 파일 없음 — downstream 스킵")
             return False
 
         file_size = jsonl_file.stat().st_size
         if file_size == 0:
-            print(f"[validate] {ds}-{hour}: JSONL 파일이 비어있음 — downstream 스킵")
+            print(f"[validate] {run_ds}-{run_hour}: JSONL 파일이 비어있음 — downstream 스킵")
             return False
 
         line_count = sum(1 for line in open(jsonl_file, "rb") if line.strip())
-        print(f"[validate] {ds}-{hour}: {line_count} events, {file_size:,} bytes")
+        print(f"[validate] {run_ds}-{run_hour}: {line_count} events, {file_size:,} bytes")
         return True
 
-    validate_result = validate()
+    validate_result = validate(run_ds, run_hour)
 
     # ── Task 3: upload_r2 (R2 원본 업로드) ──
     upload_r2 = BashOperator(
         task_id="upload_r2",
         bash_command=(
             "gharchive-etl upload "
-            "--date {{ data_interval_start | ds }} "
-            f"--input-file {DATA_DIR}/{{{{ data_interval_start | ds }}}}-{{{{ data_interval_start.strftime('%H') }}}}.jsonl "
+            f"--date {run_ds_template} "
+            f"--input-file {DATA_DIR}/{run_ds_template}-{run_hour_template}.jsonl "
             "--source rest_api "
             "--target r2 "
             f"--config {CONFIG_PATH} "
@@ -112,8 +156,8 @@ def github_rest_api_hourly():
         task_id="upload_d1",
         bash_command=(
             "gharchive-etl upload "
-            "--date {{ data_interval_start | ds }} "
-            f"--input-file {DATA_DIR}/{{{{ data_interval_start | ds }}}}-{{{{ data_interval_start.strftime('%H') }}}}.jsonl "
+            f"--date {run_ds_template} "
+            f"--input-file {DATA_DIR}/{run_ds_template}-{run_hour_template}.jsonl "
             "--source rest_api "
             "--target d1 "
             f"--config {CONFIG_PATH} "
@@ -126,7 +170,7 @@ def github_rest_api_hourly():
         task_id="enrich_details",
         bash_command=(
             "gharchive-etl enrich "
-            "--date {{ data_interval_start | ds }} "
+            f"--date {run_ds_template} "
             "--priority all "
             f"--config {CONFIG_PATH} "
             "--json-log"
@@ -139,20 +183,15 @@ def github_rest_api_hourly():
     quality_check = BashOperator(
         task_id="quality_check",
         bash_command=(
-            "gharchive-etl quality-check "
-            "--date {{ data_interval_start | ds }} "
-            f"--config {CONFIG_PATH} "
-            "--json-log"
+            f"gharchive-etl quality-check --date {run_ds_template} --config {CONFIG_PATH} --json-log"
         ),
     )
 
     # ── Task 7: cleanup (JSONL 임시 파일 삭제) ──
     @task(trigger_rule="none_failed_min_one_success")
-    def cleanup(**context) -> None:
+    def cleanup(run_ds: str, run_hour: str) -> None:
         """JSONL 임시 파일 삭제."""
-        ds = context["data_interval_start"].strftime("%Y-%m-%d")
-        hour = context["data_interval_start"].strftime("%H")
-        jsonl_file = DATA_DIR / f"{ds}-{hour}.jsonl"
+        jsonl_file = DATA_DIR / f"{run_ds}-{run_hour}.jsonl"
 
         if jsonl_file.exists():
             jsonl_file.unlink()
@@ -160,12 +199,13 @@ def github_rest_api_hourly():
         else:
             print(f"[cleanup] 파일 없음: {jsonl_file}")
 
-    cleanup_task = cleanup()
+    cleanup_task = cleanup(run_ds, run_hour)
 
     # ── 의존성 그래프 ──
     # rest_fetch → validate → [upload_r2, upload_d1]
     # upload_d1 → enrich_details → quality_check → cleanup
     # upload_r2 → cleanup
+    [run_ds, run_hour] >> rest_fetch
     rest_fetch >> validate_result >> [upload_r2, upload_d1]
     upload_d1 >> enrich_details >> quality_check >> cleanup_task
     upload_r2 >> cleanup_task

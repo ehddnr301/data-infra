@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 
 # ── 404 재시도 설정 ──────────────────────────────────
-MAX_404_RETRIES = 3
-RETRY_404_DELAY_SEC = 60
+MAX_404_RETRIES = 1
+RETRY_404_DELAY_SEC = 15
 
 # ── 데이터 클래스 ─────────────────────────────────────
 
@@ -74,7 +74,7 @@ class DownloadError(Exception):
 
 
 class HourNotFoundError(Exception):
-    """시간대 파일 404 예외 (정상 흐름, 스킵 처리)."""
+    """시간대 파일 404 예외."""
 
 
 def iter_ndjson_events(
@@ -387,7 +387,21 @@ def process_hour(
                     break  # inner loop → continue outer 404 loop
                 else:
                     stats.skipped_404 = True
+                    stats.error = (
+                        f"Hour file not found after {MAX_404_RETRIES + 1} attempts: {date}-{hour}"
+                    )
                     stats.duration_ms = (time.monotonic() - start) * 1000
+                    logger.error(
+                        "Hour file missing after retries: %s-%d",
+                        date,
+                        hour,
+                        extra={
+                            "event_code": "NETWORK_ERROR",
+                            "date": date,
+                            "hour": hour,
+                            "duration_ms": stats.duration_ms,
+                        },
+                    )
                     return [], stats
 
             except DownloadError as exc:

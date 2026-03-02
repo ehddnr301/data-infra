@@ -12,11 +12,18 @@ import type {
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { AppError, notFound, validationError } from '../../lib/errors'
+import { requireInternalBearer } from '../../middleware/internal-auth'
 
 const catalogRouter = new Hono<{ Bindings: Env }>()
 
+const DatasetDomainQuerySchema = z
+  .string()
+  .optional()
+  .transform((value) => value?.trim().toLowerCase())
+  .pipe(z.enum(['github', 'discord', 'linkedin', 'members']).optional())
+
 const DatasetQuerySchema = z.object({
-  domain: z.string().optional(),
+  domain: DatasetDomainQuerySchema,
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().max(100).optional(),
 })
@@ -81,6 +88,7 @@ const PREVIEW_SOURCE_BY_DATASET_ID: Record<string, { table: string; sortCol: str
 }
 
 const DATASET_ID_REGEX = /^[\w.-]+$/
+const DomainEnum = z.enum(['github', 'discord', 'linkedin', 'members'])
 
 const LineageParamSchema = z.object({
   datasetId: z.string().min(1).max(255).regex(DATASET_ID_REGEX, 'datasetId has invalid format'),
@@ -116,6 +124,34 @@ const LineageGraphSchema = z.object({
   version: z.literal(1),
   nodes: z.array(LineageNodeSchema),
   edges: z.array(LineageEdgeSchema),
+})
+
+const DatasetSnapshotParamSchema = z.object({
+  id: z.string().min(1).max(255).regex(DATASET_ID_REGEX, 'id has invalid format'),
+})
+
+const DatasetSnapshotBodySchema = z.object({
+  dataset: z.object({
+    id: z.string().min(1).max(255).regex(DATASET_ID_REGEX, 'dataset.id has invalid format'),
+    domain: DomainEnum,
+    name: z.string().trim().min(1).max(255),
+    description: z.string().trim().min(1),
+    schema_json: z.unknown().nullable().optional(),
+    owner: z.string().trim().min(1).max(255).nullable().optional(),
+    tags: z.union([z.string(), z.array(z.string()), z.null()]).optional(),
+  }),
+  columns: z
+    .array(
+      z.object({
+        column_name: z.string().trim().min(1).max(255),
+        data_type: z.string().trim().min(1).max(120),
+        description: z.string().trim().min(1).nullable().optional(),
+        is_pii: z.boolean().default(false),
+        examples: z.unknown().nullable().optional(),
+      }),
+    )
+    .max(5000),
+  lineage: LineageGraphSchema.optional(),
 })
 
 const validate = (schema: z.ZodTypeAny, target: 'query' | 'param') =>
@@ -203,6 +239,38 @@ function parseLineageJson(raw: unknown): unknown | null {
   } catch {
     return null
   }
+}
+
+function toJsonText(value: unknown, fieldName: string): string | null {
+  if (value === undefined || value === null) {
+    return null
+  }
+
+  if (typeof value === 'string') {
+    return value
+  }
+
+  try {
+    return JSON.stringify(value)
+  } catch {
+    throw validationError(`${fieldName} must be a JSON-serializable value`)
+  }
+}
+
+function normalizeTags(value: string | string[] | null | undefined): string | null {
+  if (value === undefined || value === null) {
+    return null
+  }
+
+  return Array.isArray(value) ? JSON.stringify(value) : value
+}
+
+function chunkStatements<T>(items: T[], chunkSize: number): T[][] {
+  const chunks: T[][] = []
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize))
+  }
+  return chunks
 }
 
 function buildDefaultSelfNodeGraph(dataset: {
@@ -626,6 +694,144 @@ catalogRouter.get('/datasets/:id/columns', validate(IdParamSchema, 'param'), asy
 
   return c.json(response)
 })
+
+catalogRouter.put(
+  '/datasets/:id/snapshot',
+  requireInternalBearer,
+  validate(DatasetSnapshotParamSchema, 'param'),
+  validateBody(DatasetSnapshotBodySchema),
+  async (c) => {
+    const { id } = c.req.valid('param')
+    const body = c.req.valid('json')
+
+    if (body.dataset.id !== id) {
+      throw validationError('dataset.id must match path parameter id')
+    }
+
+    const seenColumnNames = new Set<string>()
+    for (const col of body.columns) {
+      if (seenColumnNames.has(col.column_name)) {
+        throw validationError(`columns contain duplicate column_name: ${col.column_name}`)
+      }
+      seenColumnNames.add(col.column_name)
+    }
+
+    if (body.lineage) {
+      assertLineageGraphIntegrity(body.lineage)
+    }
+
+    const existingDataset = await c.env.DB.prepare('SELECT id FROM catalog_datasets WHERE id = ?')
+      .bind(id)
+      .first()
+
+    const existingColumnsRows = await c.env.DB.prepare(
+      'SELECT column_name FROM catalog_columns WHERE dataset_id = ?',
+    )
+      .bind(id)
+      .all()
+
+    const existingColumnNames = new Set(
+      existingColumnsRows.results
+        .map((row) => row.column_name)
+        .filter((name): name is string => typeof name === 'string'),
+    )
+
+    const now = nowIso()
+    await c.env.DB.prepare(
+      `INSERT INTO catalog_datasets (
+        id, domain, name, description, schema_json, lineage_json, owner, tags, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        domain = excluded.domain,
+        name = excluded.name,
+        description = excluded.description,
+        schema_json = excluded.schema_json,
+        lineage_json = COALESCE(excluded.lineage_json, catalog_datasets.lineage_json),
+        owner = excluded.owner,
+        tags = excluded.tags,
+        updated_at = excluded.updated_at`,
+    )
+      .bind(
+        id,
+        body.dataset.domain,
+        body.dataset.name,
+        body.dataset.description,
+        toJsonText(body.dataset.schema_json, 'dataset.schema_json'),
+        body.lineage ? JSON.stringify(body.lineage) : null,
+        body.dataset.owner ?? null,
+        normalizeTags(body.dataset.tags),
+        now,
+        now,
+      )
+      .run()
+
+    const statements = body.columns.map((col) => {
+      return c.env.DB.prepare(
+        `INSERT INTO catalog_columns (
+          dataset_id, column_name, data_type, description, is_pii, examples
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(dataset_id, column_name) DO UPDATE SET
+          data_type = excluded.data_type,
+          description = excluded.description,
+          is_pii = excluded.is_pii,
+          examples = excluded.examples`,
+      ).bind(
+        id,
+        col.column_name,
+        col.data_type,
+        col.description ?? null,
+        col.is_pii ? 1 : 0,
+        toJsonText(col.examples, 'columns.examples'),
+      )
+    })
+
+    if (statements.length > 0) {
+      const chunks = chunkStatements(statements, 100)
+      for (const batchChunk of chunks) {
+        await c.env.DB.batch(batchChunk)
+      }
+    }
+
+    let columnsAdded = 0
+    let columnsUpdated = 0
+    for (const col of body.columns) {
+      if (existingColumnNames.has(col.column_name)) {
+        columnsUpdated += 1
+      } else {
+        columnsAdded += 1
+      }
+    }
+
+    const response: ApiSuccess<{
+      applied: true
+      dataset: { added: number; updated: number; unchanged: number }
+      columns: { added: number; updated: number; unchanged: number }
+      lineage: { updated: boolean }
+    }> = {
+      success: true,
+      data: {
+        applied: true,
+        dataset: {
+          added: existingDataset ? 0 : 1,
+          updated: existingDataset ? 1 : 0,
+          unchanged: 0,
+        },
+        columns: {
+          added: columnsAdded,
+          updated: columnsUpdated,
+          unchanged: 0,
+        },
+        lineage: {
+          updated: body.lineage !== undefined,
+        },
+      },
+    }
+
+    return c.json(response)
+  },
+)
 
 catalogRouter.get('/lineage/:datasetId', validate(LineageParamSchema, 'param'), async (c) => {
   const { datasetId } = c.req.valid('param')

@@ -56,14 +56,38 @@ DEFAULT_ARGS = {
     default_args=DEFAULT_ARGS,
 )
 def github_archive_daily():
+    @task(task_id="resolve_batch_date")
+    def resolve_batch_date(**context) -> str:
+        anchor_date = context.get("logical_date")
+
+        if anchor_date is None:
+            dag_run = context.get("dag_run")
+            anchor_date = getattr(dag_run, "logical_date", None)
+
+        if anchor_date is None:
+            run_id = context.get("run_id")
+            if isinstance(run_id, str) and "__" in run_id:
+                _, _, timestamp_part = run_id.partition("__")
+                try:
+                    anchor_date = pendulum.parse(timestamp_part)
+                except Exception:
+                    pass
+
+        if anchor_date is None:
+            raise ValueError("batch date를 컨텍스트에서 결정할 수 없습니다")
+
+        return pendulum.instance(anchor_date).subtract(days=1).strftime("%Y-%m-%d")
+
+    batch_date_template = "{{ ti.xcom_pull(task_ids='resolve_batch_date') }}"
+    batch_date = resolve_batch_date()
 
     # ── Task 1: fetch (다운로드 + 필터링) ──
     fetch = BashOperator(
         task_id="fetch",
         bash_command=(
             "gharchive-etl fetch "
-            "--date {{ data_interval_start | ds }} "
-            f"--output-jsonl {DATA_DIR}/{{{{ data_interval_start | ds }}}}.jsonl "
+            f"--date {batch_date_template} "
+            f"--output-jsonl {DATA_DIR}/{batch_date_template}.jsonl "
             f"--config {CONFIG_PATH} "
             "--json-log"
         ),
@@ -73,38 +97,37 @@ def github_archive_daily():
 
     # ── Task 2: validate (JSONL 파일 검증) ──
     @task.short_circuit()
-    def validate(**context) -> bool:
+    def validate(batch_date: str) -> bool:
         """JSONL 파일 존재 및 비어있지 않음 확인.
 
         Returns:
             True: 이벤트가 존재하면 downstream 실행
             False: 파일이 없거나 비어있으면 downstream 스킵
         """
-        ds = context["data_interval_start"].strftime("%Y-%m-%d")
-        jsonl_path = DATA_DIR / f"{ds}.jsonl"
+        jsonl_path = DATA_DIR / f"{batch_date}.jsonl"
 
         if not jsonl_path.exists():
-            print(f"[validate] {ds}: JSONL 파일 없음 — downstream 스킵")
+            print(f"[validate] {batch_date}: JSONL 파일 없음 — downstream 스킵")
             return False
 
         file_size = jsonl_path.stat().st_size
         if file_size == 0:
-            print(f"[validate] {ds}: JSONL 파일이 비어있음 (이벤트 없음) — downstream 스킵")
+            print(f"[validate] {batch_date}: JSONL 파일이 비어있음 (이벤트 없음) — downstream 스킵")
             return False
 
         line_count = sum(1 for line in open(jsonl_path, "rb") if line.strip())
-        print(f"[validate] {ds}: {line_count} events, {file_size:,} bytes")
+        print(f"[validate] {batch_date}: {line_count} events, {file_size:,} bytes")
 
         return True
 
-    validate_result = validate()
+    validate_result = validate(batch_date)
 
     # ── Task 3: upload_r2 (R2 원본 업로드) ──
     upload_r2 = BashOperator(
         task_id="upload_r2",
         bash_command=(
             "gharchive-etl upload "
-            "--date {{ data_interval_start | ds }} "
+            f"--date {batch_date_template} "
             f"--input-dir {DATA_DIR} "
             "--target r2 "
             f"--config {CONFIG_PATH} "
@@ -117,7 +140,7 @@ def github_archive_daily():
         task_id="upload_d1",
         bash_command=(
             "gharchive-etl upload "
-            "--date {{ data_interval_start | ds }} "
+            f"--date {batch_date_template} "
             f"--input-dir {DATA_DIR} "
             "--target d1 "
             f"--config {CONFIG_PATH} "
@@ -130,7 +153,7 @@ def github_archive_daily():
         task_id="verify_aggregation",
         bash_command=(
             "gharchive-etl verify-aggregation "
-            "--date {{ data_interval_start | ds }} "
+            f"--date {batch_date_template} "
             f"--config {CONFIG_PATH} "
             "--json-log"
         ),
@@ -141,7 +164,7 @@ def github_archive_daily():
         task_id="enrich_details",
         bash_command=(
             "gharchive-etl enrich "
-            "--date {{ data_interval_start | ds }} "
+            f"--date {batch_date_template} "
             "--priority all "
             f"--config {CONFIG_PATH} "
             "--json-log"
@@ -154,50 +177,77 @@ def github_archive_daily():
     quality_check = BashOperator(
         task_id="quality_check",
         bash_command=(
-            "gharchive-etl quality-check "
-            "--date {{ data_interval_start | ds }} "
+            f"gharchive-etl quality-check --date {batch_date_template} --config {CONFIG_PATH} --json-log"
+        ),
+    )
+
+    # ── Task 6.5: sync_catalog (카탈로그 메타데이터 동기화, soft-fail) ──
+    sync_catalog = BashOperator(
+        task_id="sync_catalog",
+        bash_command=(
+            "gharchive-etl sync-catalog "
+            f"--date {batch_date_template} "
+            f"--status-file {DATA_DIR}/{batch_date_template}.sync-catalog.json "
             f"--config {CONFIG_PATH} "
             "--json-log"
         ),
     )
 
+    def _collect_sync_errors(ds: str) -> list[str] | None:
+        status_path = DATA_DIR / f"{ds}.sync-catalog.json"
+        if not status_path.exists():
+            return None
+
+        try:
+            import json
+
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return [f"sync-catalog status read failed: {exc}"]
+
+        errors = payload.get("errors")
+        if not isinstance(errors, list):
+            return None
+
+        return [str(error) for error in errors]
+
     # ── Task 7: daily_summary (일일 실행 요약 Slack 전송) ──
     @task(trigger_rule="none_failed_min_one_success")
-    def daily_summary(**context) -> None:
+    def daily_summary(batch_date: str) -> None:
         """일일 실행 요약을 Slack으로 전송."""
         from gharchive_etl.notify import build_daily_summary, send_slack_webhook
 
-        ds = context["data_interval_start"].strftime("%Y-%m-%d")
         webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
         if not webhook_url:
-            print(f"[daily_summary] SLACK_WEBHOOK_URL 미설정 — 요약 스킵")
+            print("[daily_summary] SLACK_WEBHOOK_URL 미설정 — 요약 스킵")
             return
 
         # JSONL 파일에서 실제 이벤트 수 계산
-        jsonl_path = DATA_DIR / f"{ds}.jsonl"
+        jsonl_path = DATA_DIR / f"{batch_date}.jsonl"
         events_count = 0
         if jsonl_path.exists():
             events_count = sum(1 for line in open(jsonl_path, "rb") if line.strip())
 
         summary = build_daily_summary(
-            batch_date=ds,
+            batch_date=batch_date,
             events_count=events_count,
             upload_success=True,
             quality_passed=True,
+            errors=_collect_sync_errors(batch_date),
         )
         send_slack_webhook(summary, webhook_url)
-        print(f"[daily_summary] {ds}: Slack 요약 전송 완료 ({events_count} events)")
+        print(f"[daily_summary] {batch_date}: Slack 요약 전송 완료 ({events_count} events)")
 
     # ── Task 8: cleanup (임시 파일 정리) ──
     @task(trigger_rule="none_failed_min_one_success")
-    def cleanup(**context) -> None:
+    def cleanup(batch_date: str) -> None:
         """JSONL 임시 파일 삭제.
 
         trigger_rule="none_failed_min_one_success": 업로드 실패 시 JSONL을 보존하고,
         이벤트 없어서 스킵된 경우에는 빈 파일을 정리한다.
         """
-        ds = context["data_interval_start"].strftime("%Y-%m-%d")
-        jsonl_path = DATA_DIR / f"{ds}.jsonl"
+        jsonl_path = DATA_DIR / f"{batch_date}.jsonl"
+        sync_status_path = DATA_DIR / f"{batch_date}.sync-catalog.json"
 
         if jsonl_path.exists():
             jsonl_path.unlink()
@@ -205,15 +255,28 @@ def github_archive_daily():
         else:
             print(f"[cleanup] 파일 없음 (이미 삭제됨): {jsonl_path}")
 
+        if sync_status_path.exists():
+            sync_status_path.unlink()
+            print(f"[cleanup] 삭제됨: {sync_status_path}")
+
     # ── 의존성 그래프 ──
     # fetch → validate → [upload_r2, upload_d1]
-    # upload_d1 → verify_aggregation → quality_check → daily_summary → cleanup
+    # upload_d1 → verify_aggregation → quality_check → sync_catalog → daily_summary → cleanup
     # upload_r2 → cleanup
-    summary_task = daily_summary()
-    cleanup_task = cleanup()
+    summary_task = daily_summary(batch_date)
+    cleanup_task = cleanup(batch_date)
 
+    batch_date >> fetch
     fetch >> validate_result >> [upload_r2, upload_d1]
-    upload_d1 >> verify_aggregation >> enrich_details >> quality_check >> summary_task >> cleanup_task
+    (
+        upload_d1
+        >> verify_aggregation
+        >> enrich_details
+        >> quality_check
+        >> sync_catalog
+        >> summary_task
+        >> cleanup_task
+    )
     upload_r2 >> cleanup_task
 
 

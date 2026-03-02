@@ -41,13 +41,9 @@ class TestDagIntegrity:
         )
         dag = dagbag.dags["github_archive_daily"]
 
-        assert str(dag.schedule_interval) == "0 3 * * *", (
-            f"스케줄 불일치: {dag.schedule_interval}"
-        )
+        assert str(dag.schedule_interval) == "0 3 * * *", f"스케줄 불일치: {dag.schedule_interval}"
         assert dag.catchup is True, "catchup이 False로 변경됨"
-        assert dag.max_active_runs == 1, (
-            f"max_active_runs 불일치: {dag.max_active_runs}"
-        )
+        assert dag.max_active_runs == 1, f"max_active_runs 불일치: {dag.max_active_runs}"
 
     def test_dag_has_expected_tasks(self):
         """DAG에 예상 Task들이 포함되어 있다."""
@@ -60,22 +56,25 @@ class TestDagIntegrity:
         task_ids = {t.task_id for t in dag.tasks}
 
         expected_tasks = {
-            "fetch", "validate", "upload_r2", "upload_d1",
-            "verify_aggregation", "enrich_details", "quality_check",
-            "daily_summary", "cleanup",
+            "fetch",
+            "validate",
+            "upload_r2",
+            "upload_d1",
+            "verify_aggregation",
+            "enrich_details",
+            "quality_check",
+            "sync_catalog",
+            "daily_summary",
+            "cleanup",
         }
-        assert expected_tasks.issubset(task_ids), (
-            f"누락 Task: {expected_tasks - task_ids}"
-        )
+        assert expected_tasks.issubset(task_ids), f"누락 Task: {expected_tasks - task_ids}"
 
     def test_dag_no_import_errors(self):
         """DagBag에 import 에러가 없다."""
         from airflow.models import DagBag
 
         dagbag = DagBag(dag_folder=str(DAG_DIR), include_examples=False)
-        assert not dagbag.import_errors, (
-            f"DAG import 에러: {dagbag.import_errors}"
-        )
+        assert not dagbag.import_errors, f"DAG import 에러: {dagbag.import_errors}"
 
     def test_task_dependencies(self):
         """Task 의존성 그래프가 올바르다."""
@@ -124,13 +123,9 @@ class TestDagIntegrity:
         dagbag = DagBag(dag_folder=str(DAG_DIR), include_examples=False)
         dag = dagbag.dags["cloudflare_usage_hourly"]
 
-        assert str(dag.schedule_interval) == "0 * * * *", (
-            f"스케줄 불일치: {dag.schedule_interval}"
-        )
+        assert str(dag.schedule_interval) == "0 * * * *", f"스케줄 불일치: {dag.schedule_interval}"
         assert dag.catchup is False, "catchup이 True로 변경됨"
-        assert dag.max_active_runs == 1, (
-            f"max_active_runs 불일치: {dag.max_active_runs}"
-        )
+        assert dag.max_active_runs == 1, f"max_active_runs 불일치: {dag.max_active_runs}"
 
     def test_cloudflare_usage_hourly_has_check_usage_task(self):
         """cloudflare_usage_hourly에 check_usage task가 존재한다."""
@@ -161,9 +156,13 @@ class TestDagIntegrity:
         quality = dag.get_task("quality_check")
         assert "enrich_details" in [t.task_id for t in quality.upstream_list]
 
-        # quality_check → daily_summary
+        # quality_check → sync_catalog
+        sync_catalog = dag.get_task("sync_catalog")
+        assert "quality_check" in [t.task_id for t in sync_catalog.upstream_list]
+
+        # sync_catalog → daily_summary
         summary = dag.get_task("daily_summary")
-        assert "quality_check" in [t.task_id for t in summary.upstream_list]
+        assert "sync_catalog" in [t.task_id for t in summary.upstream_list]
 
         # daily_summary → cleanup
         cleanup = dag.get_task("cleanup")
