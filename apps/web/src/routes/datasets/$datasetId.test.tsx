@@ -97,7 +97,7 @@ describe('DatasetDetailPage preview tab', () => {
           source: { kind: 'mapped-table', table: 'discord_messages' },
           columns: ['id', 'content'],
           rows: [{ id: 2, content: 'row-two' }],
-          meta: { limit: 20, returned: 1 },
+          meta: { limit: 10, returned: 1, total_rows: 1234 },
         },
       },
       refetch: vi.fn(),
@@ -107,15 +107,18 @@ describe('DatasetDetailPage preview tab', () => {
 
     expect(useDatasetPreview).toHaveBeenCalledWith(
       'discord.messages.v1',
-      expect.objectContaining({ limit: 20, enabled: false }),
+      expect.objectContaining({ limit: 10, enabled: false }),
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
 
     expect(useDatasetPreview).toHaveBeenLastCalledWith(
       'discord.messages.v1',
-      expect.objectContaining({ limit: 20, enabled: true }),
+      expect.objectContaining({ limit: 10, enabled: true }),
     )
+
+    const select = screen.getByLabelText('프리뷰 행 수') as HTMLSelectElement
+    expect(select.value).toBe('10')
   })
 
   it('does not crash when dataset query transitions from pending to success', () => {
@@ -135,7 +138,7 @@ describe('DatasetDetailPage preview tab', () => {
           source: { kind: 'mapped-table', table: 'discord_messages' },
           columns: ['id'],
           rows: [{ id: 1 }],
-          meta: { limit: 20, returned: 1 },
+          meta: { limit: 10, returned: 1, total_rows: 12 },
         },
       },
       refetch: vi.fn(),
@@ -158,7 +161,7 @@ describe('DatasetDetailPage preview tab', () => {
           source: { kind: 'mapped-table', table: 'discord_messages' },
           columns: ['id', 'content'],
           rows: [{ id: 2, content: 'row-two' }],
-          meta: { limit: 20, returned: 1 },
+          meta: { limit: 10, returned: 1, total_rows: 4321 },
         },
       },
       refetch: vi.fn(),
@@ -167,7 +170,8 @@ describe('DatasetDetailPage preview tab', () => {
     render(<DatasetDetailPage />)
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
 
-    expect(screen.getByText('최신 20건 기준 정렬')).toBeInTheDocument()
+    expect(screen.getByText('최신 10건 기준 정렬')).toBeInTheDocument()
+    expect(screen.getByText('약 4,321건 (근사치)')).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('프리뷰 행 수'), {
       target: { value: '50' },
@@ -193,7 +197,7 @@ describe('DatasetDetailPage preview tab', () => {
             { id: 2, content: 'row-two', payload: { nested: true } },
             { id: 1, content: 'row-one', payload: { nested: false } },
           ],
-          meta: { limit: 20, returned: 2 },
+          meta: { limit: 10, returned: 2, total_rows: 2 },
         },
       },
       refetch: vi.fn(),
@@ -231,7 +235,7 @@ describe('DatasetDetailPage preview tab', () => {
           source: { kind: 'unmapped', table: null },
           columns: [],
           rows: [],
-          meta: { limit: 20, returned: 0, reason: 'dataset-not-mapped' },
+          meta: { limit: 10, returned: 0, total_rows: null, reason: 'dataset-not-mapped' },
         },
       },
       refetch: vi.fn(),
@@ -241,6 +245,55 @@ describe('DatasetDetailPage preview tab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
 
     expect(screen.getByText('프리뷰 준비중')).toBeInTheDocument()
+    expect(screen.getByText('총건수 계산 불가')).toBeInTheDocument()
+  })
+
+  it('shows empty-state when lineage graph has no nodes', () => {
+    ;(useLineage as Mock).mockReturnValue({
+      ...baseLineageQuery,
+      data: {
+        data: {
+          version: 1,
+          nodes: [],
+          edges: [],
+        },
+      },
+    })
+
+    render(<DatasetDetailPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Lineage' }))
+
+    expect(screen.getByText('리니지 정보가 없습니다.')).toBeInTheDocument()
+    expect(screen.queryByText('lineage-viewer')).not.toBeInTheDocument()
+  })
+
+  it('renders lineage viewer when lineage graph contains nodes', () => {
+    ;(useLineage as Mock).mockReturnValue({
+      ...baseLineageQuery,
+      data: {
+        data: {
+          version: 1,
+          nodes: [
+            {
+              id: 'discord.messages.v1',
+              type: 'dataset',
+              position: { x: 0, y: 0 },
+              data: {
+                datasetId: 'discord.messages.v1',
+                label: 'Discord Messages',
+                domain: 'discord',
+              },
+            },
+          ],
+          edges: [],
+        },
+      },
+    })
+
+    render(<DatasetDetailPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Lineage' }))
+
+    expect(screen.getByText('lineage-viewer')).toBeInTheDocument()
   })
 })
 
@@ -257,7 +310,7 @@ describe('DatasetDetailPage error handling', () => {
           source: { kind: 'unmapped', table: null },
           columns: [],
           rows: [],
-          meta: { limit: 20, returned: 0 },
+          meta: { limit: 10, returned: 0, total_rows: null },
         },
       },
       refetch: vi.fn(),

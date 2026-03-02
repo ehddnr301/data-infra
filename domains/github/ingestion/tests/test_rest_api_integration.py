@@ -192,9 +192,7 @@ class TestRestApiIntegration:
     def test_source_in_all_dl_table_columns(self) -> None:
         """모든 DL 테이블 정의에 source 컬럼이 포함되어 있다."""
         for table_name, columns in DL_TABLE_COLUMNS.items():
-            assert "source" in columns, (
-                f"Table {table_name}: DL_TABLE_COLUMNS에 'source' 컬럼 누락"
-            )
+            assert "source" in columns, f"Table {table_name}: DL_TABLE_COLUMNS에 'source' 컬럼 누락"
 
 
 class TestDagIntegrationTests:
@@ -250,9 +248,31 @@ class TestDagIntegrationTests:
             "upload_d1",
             "enrich_details",
             "quality_check",
+            "should_run_daily_sync",
+            "sync_catalog",
+            "daily_summary",
             "cleanup",
         }
         assert expected.issubset(task_ids), f"누락: {expected - task_ids}"
+
+    @pytest.mark.skipif(
+        not __import__("importlib").util.find_spec("airflow"),
+        reason="Airflow not installed",
+    )
+    def test_hourly_dag_sync_gate_trigger_semantics(self) -> None:
+        """UTC 00 게이트는 downstream trigger_rule을 존중하도록 구성된다."""
+        from airflow.models import DagBag
+        from pathlib import Path
+
+        dag_dir = Path(__file__).resolve().parent.parent / "dags"
+        dagbag = DagBag(dag_folder=str(dag_dir), include_examples=False)
+        dag = dagbag.dags["github_rest_api_hourly"]
+
+        gate_task = dag.task_dict["should_run_daily_sync"]
+        cleanup_task = dag.task_dict["cleanup"]
+
+        assert getattr(gate_task, "ignore_downstream_trigger_rules", None) is False
+        assert cleanup_task.trigger_rule == "none_failed_min_one_success"
 
     @pytest.mark.skipif(
         not __import__("importlib").util.find_spec("airflow"),

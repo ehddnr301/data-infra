@@ -1,6 +1,6 @@
 import { SELF, env } from 'cloudflare:test'
 import type { Env } from '@pseudolab/shared-types'
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import {
   ProblemDetailSchema,
@@ -76,6 +76,7 @@ const DatasetPreviewResponseSchema = z.object({
   meta: z.object({
     limit: z.number(),
     returned: z.number(),
+    total_rows: z.number().nullable(),
     reason: z.enum(['dataset-not-mapped', 'empty-source']).optional(),
   }),
 })
@@ -108,6 +109,9 @@ beforeAll(async () => {
     'CREATE TABLE IF NOT EXISTS discord_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT NOT NULL, channel_id TEXT NOT NULL, author_id TEXT NOT NULL, content TEXT, payload TEXT, created_at TEXT NOT NULL);',
   )
   await db.exec(
+    'CREATE TABLE IF NOT EXISTS dl_push_events (rowid INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL, repo_name TEXT NOT NULL, user_login TEXT NOT NULL, ts_kst TEXT NOT NULL);',
+  )
+  await db.exec(
     "CREATE TABLE IF NOT EXISTS glossary_terms (id TEXT PRIMARY KEY, domain TEXT NOT NULL CHECK (domain IN ('github', 'discord', 'linkedin', 'members')), term TEXT NOT NULL, definition TEXT NOT NULL, related_terms TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(related_terms) AND json_type(related_terms) = 'array'), created_at TEXT NOT NULL CHECK (created_at GLOB '????-??-??T??:??:??*'), updated_at TEXT NOT NULL CHECK (updated_at GLOB '????-??-??T??:??:??*'));",
   )
   await db.exec(
@@ -122,6 +126,7 @@ beforeEach(async () => {
   await db.exec('DELETE FROM catalog_columns;')
   await db.exec('DELETE FROM catalog_datasets;')
   await db.exec('DELETE FROM discord_messages;')
+  await db.exec('DELETE FROM dl_push_events;')
   await db.exec('DELETE FROM glossary_terms;')
   await db.exec('DELETE FROM glossary_backfill_conflicts;')
 
@@ -134,6 +139,24 @@ beforeEach(async () => {
       'github',
       'GitHub Repo Dataset',
       'Dataset for tests',
+      null,
+      null,
+      'qa',
+      '["github"]',
+      '2025-01-01T00:00:00.000Z',
+      '2025-01-01T00:00:00.000Z',
+    )
+    .run()
+
+  await db
+    .prepare(
+      'INSERT INTO catalog_datasets (id, domain, name, description, schema_json, lineage_json, owner, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    .bind(
+      'github.push-events.v1',
+      'github',
+      'Push Events',
+      'Mapped github preview dataset',
       null,
       null,
       'qa',
@@ -195,6 +218,20 @@ beforeEach(async () => {
       )
       .run()
   }
+
+  await db
+    .prepare(
+      'INSERT INTO dl_push_events (event_id, repo_name, user_login, ts_kst) VALUES (?, ?, ?, ?)',
+    )
+    .bind('evt-1', 'Pseudo-Lab/pseudolab-cloudflare', 'alice', '2025-01-10T09:00:00+09:00')
+    .run()
+
+  await db
+    .prepare(
+      'INSERT INTO dl_push_events (event_id, repo_name, user_login, ts_kst) VALUES (?, ?, ?, ?)',
+    )
+    .bind('evt-2', 'Pseudo-Lab/pseudolab-cloudflare', 'bob', '2025-01-11T09:00:00+09:00')
+    .run()
 })
 
 async function insertGlossaryTerm(input: {
@@ -328,14 +365,36 @@ describe('datasets routes', () => {
     expect(parsed.data.data.datasetId).toBe('discord.messages.v1')
     expect(parsed.data.data.source.kind).toBe('mapped-table')
     expect(parsed.data.data.source.table).toBe('discord_messages')
-    expect(parsed.data.data.meta.limit).toBe(20)
-    expect(parsed.data.data.meta.returned).toBe(20)
+    expect(parsed.data.data.meta.limit).toBe(10)
+    expect(parsed.data.data.meta.returned).toBe(10)
+    expect(parsed.data.data.meta.total_rows).toBe(30)
     expect(parsed.data.data.columns.length).toBeGreaterThan(0)
     const firstRow = parsed.data.data.rows[0]
     const lastRow = parsed.data.data.rows[parsed.data.data.rows.length - 1]
     expect(typeof firstRow?.created_at).toBe('string')
     expect(typeof lastRow?.created_at).toBe('string')
     expect(String(firstRow?.created_at) > String(lastRow?.created_at)).toBe(true)
+  })
+
+  it('returns preview rows for github mapped dataset', async () => {
+    const res = await SELF.fetch(
+      'http://example.com/api/catalog/datasets/github.push-events.v1/preview',
+    )
+
+    expect(res.status).toBe(200)
+    expectJson(res)
+
+    const parsed = apiSuccessSchema(DatasetPreviewResponseSchema).safeParse(await res.json())
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) {
+      return
+    }
+
+    expect(parsed.data.data.source.kind).toBe('mapped-table')
+    expect(parsed.data.data.source.table).toBe('dl_push_events')
+    expect(parsed.data.data.meta.limit).toBe(10)
+    expect(parsed.data.data.meta.returned).toBe(2)
+    expect(parsed.data.data.meta.total_rows).toBe(2)
   })
 
   it('respects limit query values for preview', async () => {
@@ -354,6 +413,7 @@ describe('datasets routes', () => {
       expect(parsed.data.data.meta.limit).toBe(limit)
       expect(parsed.data.data.rows.length).toBeLessThanOrEqual(limit)
       expect(parsed.data.data.meta.returned).toBe(parsed.data.data.rows.length)
+      expect(typeof parsed.data.data.meta.total_rows).toBe('number')
     }
   })
 
@@ -390,7 +450,84 @@ describe('datasets routes', () => {
     expect(parsed.data.data.source.table).toBeNull()
     expect(parsed.data.data.rows).toEqual([])
     expect(parsed.data.data.columns).toEqual([])
+    expect(parsed.data.data.meta.total_rows).toBeNull()
     expect(parsed.data.data.meta.reason).toBe('dataset-not-mapped')
+  })
+
+  it('falls back to D1 when KV read fails', async () => {
+    const cache = (env as unknown as Env).CACHE
+    const getSpy = vi.spyOn(cache, 'get').mockRejectedValueOnce(new Error('kv down'))
+
+    const res = await SELF.fetch(
+      'http://example.com/api/catalog/datasets/discord.messages.v1/preview?limit=11',
+    )
+    expect(res.status).toBe(200)
+    expectJson(res)
+
+    const parsed = apiSuccessSchema(DatasetPreviewResponseSchema).safeParse(await res.json())
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) {
+      getSpy.mockRestore()
+      return
+    }
+
+    expect(parsed.data.data.meta.limit).toBe(11)
+    expect(parsed.data.data.meta.total_rows).toBe(30)
+    getSpy.mockRestore()
+  })
+
+  it('keeps success response when KV write fails', async () => {
+    const cache = (env as unknown as Env).CACHE
+    const putSpy = vi.spyOn(cache, 'put').mockRejectedValueOnce(new Error('kv write failed'))
+
+    const res = await SELF.fetch(
+      'http://example.com/api/catalog/datasets/discord.messages.v1/preview',
+    )
+    expect(res.status).toBe(200)
+    expectJson(res)
+
+    const parsed = apiSuccessSchema(DatasetPreviewResponseSchema).safeParse(await res.json())
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) {
+      putSpy.mockRestore()
+      return
+    }
+
+    expect(parsed.data.data.meta.limit).toBe(10)
+    expect(parsed.data.data.meta.total_rows).toBe(30)
+    putSpy.mockRestore()
+  })
+
+  it('returns cached preview payload on repeated request', async () => {
+    const first = await SELF.fetch(
+      'http://example.com/api/catalog/datasets/discord.messages.v1/preview',
+    )
+    expect(first.status).toBe(200)
+    expectJson(first)
+    const firstParsed = apiSuccessSchema(DatasetPreviewResponseSchema).safeParse(await first.json())
+    expect(firstParsed.success).toBe(true)
+    if (!firstParsed.success) {
+      return
+    }
+
+    await (env as unknown as Env).DB.exec('DELETE FROM discord_messages;')
+
+    const second = await SELF.fetch(
+      'http://example.com/api/catalog/datasets/discord.messages.v1/preview',
+    )
+    expect(second.status).toBe(200)
+    expectJson(second)
+    const secondParsed = apiSuccessSchema(DatasetPreviewResponseSchema).safeParse(
+      await second.json(),
+    )
+    expect(secondParsed.success).toBe(true)
+    if (!secondParsed.success) {
+      return
+    }
+
+    expect(secondParsed.data.data.meta.returned).toBe(firstParsed.data.data.meta.returned)
+    expect(secondParsed.data.data.rows).toEqual(firstParsed.data.data.rows)
+    expect(secondParsed.data.data.meta.total_rows).toBe(firstParsed.data.data.meta.total_rows)
   })
 })
 
@@ -412,7 +549,7 @@ describe('dataset snapshot route', () => {
   it('creates new dataset and columns', async () => {
     const payload = {
       dataset: {
-        id: 'github.push-events.v1',
+        id: 'github.delete-events.v1',
         domain: 'github',
         name: 'Push Events',
         description: 'Push events dataset',
@@ -439,7 +576,7 @@ describe('dataset snapshot route', () => {
     }
 
     const res = await SELF.fetch(
-      'http://example.com/api/catalog/datasets/github.push-events.v1/snapshot',
+      'http://example.com/api/catalog/datasets/github.delete-events.v1/snapshot',
       {
         method: 'PUT',
         headers: InternalAuthHeaders,
@@ -463,9 +600,9 @@ describe('dataset snapshot route', () => {
       .prepare(
         'SELECT id, domain, name, schema_json, owner, tags FROM catalog_datasets WHERE id = ?',
       )
-      .bind('github.push-events.v1')
+      .bind('github.delete-events.v1')
       .first<Record<string, unknown>>()
-    expect(dataset?.id).toBe('github.push-events.v1')
+    expect(dataset?.id).toBe('github.delete-events.v1')
     expect(dataset?.domain).toBe('github')
     expect(dataset?.name).toBe('Push Events')
     expect(dataset?.owner).toBe('etl')
@@ -476,7 +613,7 @@ describe('dataset snapshot route', () => {
       .prepare(
         'SELECT column_name, data_type FROM catalog_columns WHERE dataset_id = ? ORDER BY column_name',
       )
-      .bind('github.push-events.v1')
+      .bind('github.delete-events.v1')
       .all<Record<string, unknown>>()
     expect(columns.results).toHaveLength(2)
     expect(columns.results[0]?.column_name).toBe('event_id')
@@ -674,6 +811,27 @@ describe('lineage routes', () => {
   })
 
   it('GET returns default self-node graph when lineage_json is NULL', async () => {
+    const res = await SELF.fetch('http://example.com/api/catalog/lineage/ds.github.repo.v1')
+    expect(res.status).toBe(200)
+    expectJson(res)
+
+    const parsed = apiSuccessSchema(LineageGraphSchema).safeParse(await res.json())
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) {
+      return
+    }
+
+    expect(parsed.data.data.nodes).toHaveLength(1)
+    expect(parsed.data.data.nodes[0]?.id).toBe('ds.github.repo.v1')
+    expect(parsed.data.data.edges).toEqual([])
+  })
+
+  it('GET falls back to default self-node graph when lineage_json has empty nodes', async () => {
+    await db
+      .prepare('UPDATE catalog_datasets SET lineage_json = ? WHERE id = ?')
+      .bind(JSON.stringify({ version: 1, nodes: [], edges: [] }), 'ds.github.repo.v1')
+      .run()
+
     const res = await SELF.fetch('http://example.com/api/catalog/lineage/ds.github.repo.v1')
     expect(res.status).toBe(200)
     expectJson(res)

@@ -21,12 +21,44 @@ def test_build_dataset_snapshots_contains_all_dl_tables() -> None:
 
 
 def test_build_lineage_graph_dataset_only_nodes() -> None:
-    graph = build_lineage_graph("github.push-events.v1")
+    graph = build_lineage_graph("github.push-events.v1", "Push Events (dl_push_events)")
 
     assert graph["version"] == 1
     assert all(node["type"] == "dataset" for node in graph["nodes"])
-    assert len(graph["edges"]) == 1
-    assert graph["edges"][0]["data"]["step"] == "transform-load"
+    assert len(graph["nodes"]) == 3
+    assert len(graph["edges"]) == 3
+    steps = {edge["data"]["step"] for edge in graph["edges"]}
+    assert steps == {"ingest-gharchive", "ingest-rest-api", "transform-load"}
+
+
+def test_build_dataset_snapshots_name_and_description_rules() -> None:
+    snapshots = build_dataset_snapshots()
+    push_snapshot = next(
+        item for item in snapshots if item["dataset_id"] == "github.push-events.v1"
+    )
+    dataset = push_snapshot["snapshot"]["dataset"]
+
+    assert dataset["name"] == "dl_push_events"
+    assert "`dl_push_events`" in dataset["description"]
+    assert "gharchive" in dataset["description"]
+    assert "rest_api" in dataset["description"]
+    assert "활동 추세 분석" in dataset["description"]
+    assert dataset["schema_json"]["display_name"] == "Push Events"
+
+
+def test_build_dataset_snapshots_column_description_rules() -> None:
+    snapshots = build_dataset_snapshots()
+    push_snapshot = next(
+        item for item in snapshots if item["dataset_id"] == "github.push-events.v1"
+    )
+    columns = push_snapshot["snapshot"]["columns"]
+    source_column = next(column for column in columns if column["column_name"] == "source")
+    commit_url_column = next(column for column in columns if column["column_name"] == "commit_url")
+
+    assert "gharchive 또는 rest_api" in source_column["description"]
+    assert (
+        commit_url_column["description"] == "원본 리소스를 조회할 수 있는 `commit_url` URL입니다."
+    )
 
 
 def test_sync_catalog_dry_run_has_no_errors() -> None:

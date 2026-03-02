@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -10,19 +11,36 @@ from urllib.parse import quote
 
 import httpx
 
-from gharchive_etl.dl_models import DL_TABLE_COLUMNS
+from gharchive_etl.dl_models import DL_TABLE_COLUMNS, TABLE_TO_EVENT_TYPE
 
 logger = logging.getLogger(__name__)
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 KNOWN_KEY_COLUMN_DESCRIPTIONS: dict[str, str] = {
-    "event_id": "GitHub event unique identifier.",
-    "repo_name": "Repository full name (owner/repo).",
-    "organization": "Organization login associated with the event.",
-    "user_login": "Actor login that triggered the event.",
-    "ts_kst": "Event timestamp converted to KST timezone.",
-    "base_date": "ETL batch base date (YYYY-MM-DD).",
-    "source": "Ingestion source channel.",
+    "event_id": "GitHub 이벤트를 고유하게 식별하는 ID입니다.",
+    "repo_name": "이벤트가 발생한 저장소 전체 이름(owner/repo)입니다.",
+    "organization": "이벤트가 속한 조직 로그인 이름입니다.",
+    "user_login": "이벤트를 발생시킨 사용자 로그인입니다.",
+    "ts_kst": "이벤트 발생 시각(한국 시간, KST)입니다.",
+    "base_date": "ETL 배치 기준일(YYYY-MM-DD)입니다.",
+    "source": "수집 소스(gharchive 또는 rest_api)입니다.",
+    "ref_full": "Git ref 전체 경로입니다(예: refs/heads/main).",
+    "ref_name": "브랜치/태그의 짧은 ref 이름입니다.",
+    "head_sha": "이벤트 시점의 HEAD 커밋 SHA입니다.",
+    "before_sha": "이벤트 직전 커밋 SHA입니다.",
+    "pr_number": "Pull Request 번호입니다.",
+    "issue_number": "Issue 번호입니다.",
+    "comment_id": "댓글 고유 ID입니다.",
+    "review_id": "리뷰 고유 ID입니다.",
+    "review_comment_id": "리뷰 댓글 고유 ID입니다.",
+    "action": "이벤트에서 발생한 동작 유형입니다.",
+    "commit_sha": "커밋 SHA 식별자입니다.",
+    "pr_title": "Pull Request 제목입니다.",
+    "issue_title": "Issue 제목입니다.",
+    "body": "본문 텍스트입니다.",
+    "state": "이슈/리뷰의 상태 값입니다.",
+    "release_id": "릴리스 고유 ID입니다.",
+    "release_tag_name": "릴리스 태그 이름입니다.",
 }
 PII_COLUMN_NAMES = {
     "commit_author_email",
@@ -88,11 +106,42 @@ def _infer_data_type(column_name: str) -> str:
     return "TEXT"
 
 
+def _event_display_name(table_name: str) -> str:
+    event_type = TABLE_TO_EVENT_TYPE.get(table_name)
+    if not event_type:
+        return table_name
+
+    core = event_type.removesuffix("Event")
+    spaced = re.sub(r"(?<!^)([A-Z])", r" \1", core).strip()
+    return f"{spaced} Events"
+
+
 def _column_description(table_name: str, column_name: str) -> str:
     known = KNOWN_KEY_COLUMN_DESCRIPTIONS.get(column_name)
     if known:
         return known
-    return f"Column `{column_name}` generated from `{table_name}` table during ETL."
+
+    if column_name.startswith("is_"):
+        return f"`{column_name}` 조건 충족 여부를 나타내는 불리언 플래그입니다."
+
+    if column_name.endswith("_id"):
+        return f"연관 엔터티를 식별하는 `{column_name}` 키 값입니다."
+
+    if column_name.endswith("_url"):
+        return f"원본 리소스를 조회할 수 있는 `{column_name}` URL입니다."
+
+    if column_name.endswith("_count"):
+        return f"집계 개수를 나타내는 `{column_name}` 수치입니다."
+
+    return f"`{table_name}` 분석에 사용하는 `{column_name}` 속성입니다."
+
+
+def _dataset_description(table_name: str, event_display_name: str) -> str:
+    return (
+        f"`{table_name}` 테이블은 {event_display_name} 이벤트를 저장합니다. "
+        "gharchive와 rest_api 소스를 통합해 생성되며, "
+        "리포지토리 활동 추세 분석과 운영 모니터링에 활용할 수 있습니다."
+    )
 
 
 def build_column_metadata(table_name: str, columns: list[str]) -> list[dict[str, Any]]:
@@ -108,8 +157,9 @@ def build_column_metadata(table_name: str, columns: list[str]) -> list[dict[str,
     ]
 
 
-def build_lineage_graph(dataset_id: str) -> dict[str, Any]:
-    source_dataset_id = "github.raw-events.v1"
+def build_lineage_graph(dataset_id: str, dataset_label: str) -> dict[str, Any]:
+    raw_source_dataset_id = "github.raw-events.v1"
+    rest_source_dataset_id = "github.rest-events.v1"
     nodes = [
         {
             "id": dataset_id,
@@ -117,36 +167,54 @@ def build_lineage_graph(dataset_id: str) -> dict[str, Any]:
             "position": {"x": 0, "y": 0},
             "data": {
                 "datasetId": dataset_id,
-                "label": dataset_id,
+                "label": dataset_label,
                 "domain": "github",
             },
-        }
-    ]
-    edges: list[dict[str, Any]] = []
-
-    if dataset_id != source_dataset_id:
-        nodes.insert(
-            0,
-            {
-                "id": source_dataset_id,
-                "type": "dataset",
-                "position": {"x": -260, "y": 0},
-                "data": {
-                    "datasetId": source_dataset_id,
-                    "label": source_dataset_id,
-                    "domain": "github",
-                },
+        },
+        {
+            "id": raw_source_dataset_id,
+            "type": "dataset",
+            "position": {"x": -280, "y": -100},
+            "data": {
+                "datasetId": raw_source_dataset_id,
+                "label": "GitHub Raw Events",
+                "domain": "github",
             },
-        )
-        edges.append(
-            {
-                "id": f"{source_dataset_id}->{dataset_id}",
-                "source": source_dataset_id,
-                "target": dataset_id,
-                "data": {"step": "transform-load"},
-                "label": "transform-load",
-            }
-        )
+        },
+        {
+            "id": rest_source_dataset_id,
+            "type": "dataset",
+            "position": {"x": -280, "y": 100},
+            "data": {
+                "datasetId": rest_source_dataset_id,
+                "label": "GitHub REST Events",
+                "domain": "github",
+            },
+        },
+    ]
+    edges: list[dict[str, Any]] = [
+        {
+            "id": f"{raw_source_dataset_id}->{dataset_id}:ingest-gharchive",
+            "source": raw_source_dataset_id,
+            "target": dataset_id,
+            "data": {"step": "ingest-gharchive"},
+            "label": "ingest-gharchive",
+        },
+        {
+            "id": f"{rest_source_dataset_id}->{dataset_id}:ingest-rest-api",
+            "source": rest_source_dataset_id,
+            "target": dataset_id,
+            "data": {"step": "ingest-rest-api"},
+            "label": "ingest-rest-api",
+        },
+        {
+            "id": f"{raw_source_dataset_id}->{dataset_id}:transform-load",
+            "source": raw_source_dataset_id,
+            "target": dataset_id,
+            "data": {"step": "transform-load"},
+            "label": "transform-load",
+        },
+    ]
 
     return {
         "version": 1,
@@ -159,6 +227,8 @@ def build_dataset_snapshots() -> list[dict[str, Any]]:
     snapshots: list[dict[str, Any]] = []
     for table_name, columns in sorted(DL_TABLE_COLUMNS.items()):
         dataset_id = _dataset_id_from_table(table_name)
+        event_display_name = _event_display_name(table_name)
+        dataset_name = f"{event_display_name} ({table_name})"
         snapshots.append(
             {
                 "dataset_id": dataset_id,
@@ -166,17 +236,18 @@ def build_dataset_snapshots() -> list[dict[str, Any]]:
                     "dataset": {
                         "id": dataset_id,
                         "domain": "github",
-                        "name": f"GitHub {_table_suffix(table_name)}",
-                        "description": f"Auto-synced metadata for `{table_name}`.",
+                        "name": table_name,
+                        "description": _dataset_description(table_name, event_display_name),
                         "schema_json": {
                             "version": 1,
                             "source_table": table_name,
+                            "display_name": event_display_name,
                         },
                         "owner": "github-ingestion",
                         "tags": ["github", "etl", "auto-sync"],
                     },
                     "columns": build_column_metadata(table_name, columns),
-                    "lineage": build_lineage_graph(dataset_id),
+                    "lineage": build_lineage_graph(dataset_id, dataset_name),
                 },
             }
         )

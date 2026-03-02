@@ -277,7 +277,7 @@ export function DatasetDetailPage() {
   const datasetQuery = useDataset(datasetId)
   const columnsQuery = useColumns(datasetId)
   const [activeTab, setActiveTab] = useState<DatasetDetailTab>('columns')
-  const [previewLimit, setPreviewLimit] = useState<number>(20)
+  const [previewLimit, setPreviewLimit] = useState<number>(10)
   const previewQuery = useDatasetPreview(datasetId, {
     limit: previewLimit,
     enabled: activeTab === 'preview',
@@ -345,6 +345,10 @@ export function DatasetDetailPage() {
   const columns = columnsQuery.data?.data ?? []
   const tags = parseTags(dataset.tags)
   const preview = previewQuery.data?.data
+  const totalRowsLabel =
+    !preview || preview.meta.total_rows === null
+      ? '총건수 계산 불가'
+      : `약 ${preview.meta.total_rows.toLocaleString('ko-KR')}건 (근사치)`
 
   const sortedPreviewRows = (() => {
     const rows = preview?.rows ?? []
@@ -532,6 +536,7 @@ export function DatasetDetailPage() {
             <p className="text-sm text-[var(--muted-foreground)]">
               최신 {previewLimit}건 기준 정렬
             </p>
+            <p className="text-xs text-[var(--muted-foreground)]">{totalRowsLabel}</p>
 
             {previewQuery.isPending ? (
               <Card className="p-4 space-y-3">
@@ -650,7 +655,7 @@ export function DatasetDetailPage() {
                 message="리니지 정보를 불러올 수 없습니다."
                 onRetry={() => lineageQuery.refetch()}
               />
-            ) : lineageQuery.data?.data ? (
+            ) : lineageQuery.data?.data && lineageQuery.data.data.nodes.length > 0 ? (
               <Card className="p-3">
                 <LineageViewer
                   datasetId={datasetId}

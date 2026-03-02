@@ -81,11 +81,33 @@ const PreviewQuerySchema = z.object({
 })
 
 const PREVIEW_SOURCE_BY_DATASET_ID: Record<string, { table: string; sortCol: string }> = {
+  'github.push-events.v1': { table: 'dl_push_events', sortCol: 'ts_kst' },
+  'github.pull-request-events.v1': { table: 'dl_pull_request_events', sortCol: 'ts_kst' },
+  'github.issues-events.v1': { table: 'dl_issues_events', sortCol: 'ts_kst' },
+  'github.issue-comment-events.v1': { table: 'dl_issue_comment_events', sortCol: 'ts_kst' },
+  'github.watch-events.v1': { table: 'dl_watch_events', sortCol: 'ts_kst' },
+  'github.fork-events.v1': { table: 'dl_fork_events', sortCol: 'ts_kst' },
+  'github.create-events.v1': { table: 'dl_create_events', sortCol: 'ts_kst' },
+  'github.delete-events.v1': { table: 'dl_delete_events', sortCol: 'ts_kst' },
+  'github.pull-request-review-events.v1': {
+    table: 'dl_pull_request_review_events',
+    sortCol: 'ts_kst',
+  },
+  'github.pull-request-review-comment-events.v1': {
+    table: 'dl_pull_request_review_comment_events',
+    sortCol: 'ts_kst',
+  },
+  'github.member-events.v1': { table: 'dl_member_events', sortCol: 'ts_kst' },
+  'github.gollum-events.v1': { table: 'dl_gollum_events', sortCol: 'ts_kst' },
+  'github.release-events.v1': { table: 'dl_release_events', sortCol: 'ts_kst' },
+  'github.public-events.v1': { table: 'dl_public_events', sortCol: 'ts_kst' },
   'discord.messages.v1': {
     table: 'discord_messages',
     sortCol: 'created_at',
   },
 }
+
+const PREVIEW_CACHE_TTL_SECONDS = 86_400
 
 const DATASET_ID_REGEX = /^[\w.-]+$/
 const DomainEnum = z.enum(['github', 'discord', 'linkedin', 'members'])
@@ -239,6 +261,14 @@ function parseLineageJson(raw: unknown): unknown | null {
   } catch {
     return null
   }
+}
+
+function utcDateKey(input: Date): string {
+  return input.toISOString().slice(0, 10)
+}
+
+function previewCacheKey(datasetId: string, limit: number, day: string): string {
+  return `dataset-preview:v1:${datasetId}:limit:${limit}:day:${day}`
 }
 
 function toJsonText(value: unknown, fieldName: string): string | null {
@@ -599,7 +629,34 @@ catalogRouter.get(
   async (c) => {
     const { id } = c.req.valid('param')
     const query = c.req.valid('query')
-    const limit = query.limit ?? 20
+    const limit = query.limit ?? 10
+    const cacheKey = previewCacheKey(id, limit, utcDateKey(new Date()))
+
+    let cachedResponse: ApiSuccess<DatasetPreviewResponse> | null = null
+    try {
+      cachedResponse = (await c.env.CACHE.get(
+        cacheKey,
+        'json',
+      )) as ApiSuccess<DatasetPreviewResponse> | null
+    } catch (error) {
+      console.warn('[catalog-preview] kv_read_failed', {
+        datasetId: id,
+        limit,
+        cacheKey,
+        error: error instanceof Error ? error.message : String(error),
+        kv_read_failed: true,
+      })
+    }
+
+    if (cachedResponse) {
+      console.info('[catalog-preview] cache_hit', {
+        datasetId: id,
+        limit,
+        cacheKey,
+        cache_hit: true,
+      })
+      return c.json(cachedResponse)
+    }
 
     const dataset = await c.env.DB.prepare('SELECT id FROM catalog_datasets WHERE id = ?')
       .bind(id)
@@ -607,6 +664,13 @@ catalogRouter.get(
     if (!dataset) {
       throw notFound('Catalog dataset not found')
     }
+
+    console.info('[catalog-preview] cache_miss', {
+      datasetId: id,
+      limit,
+      cacheKey,
+      cache_miss: true,
+    })
 
     const source = PREVIEW_SOURCE_BY_DATASET_ID[id]
     if (!source) {
@@ -623,19 +687,52 @@ catalogRouter.get(
           meta: {
             limit,
             returned: 0,
+            total_rows: null,
             reason: 'dataset-not-mapped',
           },
         },
       }
 
+      try {
+        await c.env.CACHE.put(cacheKey, JSON.stringify(response), {
+          expirationTtl: PREVIEW_CACHE_TTL_SECONDS,
+        })
+      } catch (error) {
+        console.warn('[catalog-preview] kv_write_failed', {
+          datasetId: id,
+          limit,
+          cacheKey,
+          error: error instanceof Error ? error.message : String(error),
+          kv_write_failed: true,
+        })
+      }
+
       return c.json(response)
     }
 
+    const d1StartedAt = Date.now()
     const statement = `SELECT * FROM ${source.table} ORDER BY ${source.sortCol} DESC LIMIT ?`
     const previewRows = await c.env.DB.prepare(statement).bind(limit).all()
+    const totalRowsResult = (await c.env.DB.prepare(
+      `SELECT MAX(rowid) AS total_rows FROM ${source.table}`,
+    ).first()) as {
+      total_rows: number | null
+    } | null
+    const d1LatencyMs = Date.now() - d1StartedAt
+
     const rows = previewRows.results as Array<Record<string, unknown>>
     const columns = Object.keys(rows[0] ?? {})
     const reason = rows.length === 0 ? 'empty-source' : undefined
+    const totalRows = totalRowsResult?.total_rows ?? 0
+
+    console.info('[catalog-preview] d1_query', {
+      datasetId: id,
+      limit,
+      table: source.table,
+      returned: rows.length,
+      total_rows: totalRows,
+      d1_latency_ms: d1LatencyMs,
+    })
 
     const response: ApiSuccess<DatasetPreviewResponse> = {
       success: true,
@@ -650,9 +747,24 @@ catalogRouter.get(
         meta: {
           limit,
           returned: rows.length,
+          total_rows: totalRows,
           reason,
         },
       },
+    }
+
+    try {
+      await c.env.CACHE.put(cacheKey, JSON.stringify(response), {
+        expirationTtl: PREVIEW_CACHE_TTL_SECONDS,
+      })
+    } catch (error) {
+      console.warn('[catalog-preview] kv_write_failed', {
+        datasetId: id,
+        limit,
+        cacheKey,
+        error: error instanceof Error ? error.message : String(error),
+        kv_write_failed: true,
+      })
     }
 
     return c.json(response)
@@ -861,11 +973,17 @@ catalogRouter.get('/lineage/:datasetId', validate(LineageParamSchema, 'param'), 
     throw validationError('lineage_json has unsupported shape')
   }
 
-  assertLineageGraphIntegrity(normalized)
+  const hasCenterNode = normalized.nodes.some((node) => node.id === dataset.id)
+  const safeGraph =
+    normalized.nodes.length === 0 || !hasCenterNode
+      ? buildDefaultSelfNodeGraph(dataset)
+      : normalized
+
+  assertLineageGraphIntegrity(safeGraph)
 
   const response: ApiSuccess<LineageGraph> = {
     success: true,
-    data: normalized,
+    data: safeGraph,
   }
 
   return c.json(response)

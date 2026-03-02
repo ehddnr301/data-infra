@@ -4,7 +4,7 @@
 
 Task 흐름:
   rest_fetch → [upload_r2, upload_d1]
-  upload_d1 → enrich_details → quality_check → cleanup
+  upload_d1 → enrich_details → quality_check → should_run_daily_sync → sync_catalog → daily_summary → cleanup
   upload_r2 → cleanup
 """
 
@@ -137,6 +137,15 @@ def github_rest_api_hourly():
 
     validate_result = validate(run_ds, run_hour)
 
+    @task.short_circuit(
+        task_id="should_run_daily_sync",
+        ignore_downstream_trigger_rules=False,
+    )
+    def should_run_daily_sync(run_hour: str) -> bool:
+        return run_hour == "00"
+
+    run_daily_sync = should_run_daily_sync(run_hour)
+
     # ── Task 3: upload_r2 (R2 원본 업로드) ──
     upload_r2 = BashOperator(
         task_id="upload_r2",
@@ -187,11 +196,67 @@ def github_rest_api_hourly():
         ),
     )
 
+    # ── Task 6.5: sync_catalog (카탈로그 메타데이터 동기화, soft-fail) ──
+    sync_catalog = BashOperator(
+        task_id="sync_catalog",
+        bash_command=(
+            "gharchive-etl sync-catalog "
+            f"--date {run_ds_template} "
+            f"--status-file {DATA_DIR}/{run_ds_template}.sync-catalog.json "
+            f"--config {CONFIG_PATH} "
+            "--json-log"
+        ),
+    )
+
+    def _collect_sync_errors(ds: str) -> list[str] | None:
+        status_path = DATA_DIR / f"{ds}.sync-catalog.json"
+        if not status_path.exists():
+            return None
+
+        try:
+            import json
+
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return [f"sync-catalog status read failed: {exc}"]
+
+        errors = payload.get("errors")
+        if not isinstance(errors, list):
+            return None
+
+        return [str(error) for error in errors]
+
+    # ── Task 6.7: daily_summary (UTC 00 sync 결과 요약) ──
+    @task(trigger_rule="none_failed_min_one_success")
+    def daily_summary(run_ds: str, run_hour: str) -> None:
+        from gharchive_etl.notify import build_daily_summary, send_slack_webhook
+
+        webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+        if not webhook_url:
+            print("[daily_summary] SLACK_WEBHOOK_URL 미설정 — 요약 스킵")
+            return
+
+        jsonl_file = DATA_DIR / f"{run_ds}-{run_hour}.jsonl"
+        events_count = 0
+        if jsonl_file.exists():
+            events_count = sum(1 for line in open(jsonl_file, "rb") if line.strip())
+
+        summary = build_daily_summary(
+            batch_date=run_ds,
+            events_count=events_count,
+            upload_success=True,
+            quality_passed=True,
+            errors=_collect_sync_errors(run_ds),
+        )
+        send_slack_webhook(summary, webhook_url)
+        print(f"[daily_summary] {run_ds}T{run_hour}: Slack 요약 전송 완료 ({events_count} events)")
+
     # ── Task 7: cleanup (JSONL 임시 파일 삭제) ──
     @task(trigger_rule="none_failed_min_one_success")
     def cleanup(run_ds: str, run_hour: str) -> None:
         """JSONL 임시 파일 삭제."""
         jsonl_file = DATA_DIR / f"{run_ds}-{run_hour}.jsonl"
+        sync_status_file = DATA_DIR / f"{run_ds}.sync-catalog.json"
 
         if jsonl_file.exists():
             jsonl_file.unlink()
@@ -199,15 +264,28 @@ def github_rest_api_hourly():
         else:
             print(f"[cleanup] 파일 없음: {jsonl_file}")
 
+        if sync_status_file.exists():
+            sync_status_file.unlink()
+            print(f"[cleanup] 삭제됨: {sync_status_file}")
+
+    summary_task = daily_summary(run_ds, run_hour)
     cleanup_task = cleanup(run_ds, run_hour)
 
     # ── 의존성 그래프 ──
     # rest_fetch → validate → [upload_r2, upload_d1]
-    # upload_d1 → enrich_details → quality_check → cleanup
+    # upload_d1 → enrich_details → quality_check → should_run_daily_sync → sync_catalog → daily_summary → cleanup
     # upload_r2 → cleanup
     [run_ds, run_hour] >> rest_fetch
     rest_fetch >> validate_result >> [upload_r2, upload_d1]
-    upload_d1 >> enrich_details >> quality_check >> cleanup_task
+    (
+        upload_d1
+        >> enrich_details
+        >> quality_check
+        >> run_daily_sync
+        >> sync_catalog
+        >> summary_task
+        >> cleanup_task
+    )
     upload_r2 >> cleanup_task
 
 

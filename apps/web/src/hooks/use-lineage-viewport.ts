@@ -6,6 +6,9 @@ const DEFAULT_VIEWPORT: LineageViewport = {
   zoom: 1,
 }
 
+const MIN_ZOOM = 0.2
+const MAX_ZOOM = 3
+
 function getViewportKey(datasetId: string): string {
   return `lineage-viewport-${datasetId}`
 }
@@ -16,9 +19,24 @@ function isValidViewport(input: unknown): input is LineageViewport {
   }
 
   const value = input as Record<string, unknown>
-  return (
-    typeof value.x === 'number' && typeof value.y === 'number' && typeof value.zoom === 'number'
-  )
+
+  if (
+    typeof value.x !== 'number' ||
+    typeof value.y !== 'number' ||
+    typeof value.zoom !== 'number'
+  ) {
+    return false
+  }
+
+  if (!Number.isFinite(value.x) || !Number.isFinite(value.y) || !Number.isFinite(value.zoom)) {
+    return false
+  }
+
+  if (value.zoom < MIN_ZOOM || value.zoom > MAX_ZOOM) {
+    return false
+  }
+
+  return Math.abs(value.x) <= 100_000 && Math.abs(value.y) <= 100_000
 }
 
 export function readLineageViewport(datasetId: string): LineageViewport {

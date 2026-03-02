@@ -28,7 +28,7 @@ export function useDatasetPreview(
   datasetId: string,
   options?: { limit?: number; enabled?: boolean },
 ) {
-  const limit = options?.limit ?? 20
+  const limit = options?.limit ?? 10
 
   return useQuery({
     queryKey: ['catalog', 'preview', datasetId, { limit }],
