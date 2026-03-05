@@ -43,8 +43,14 @@ class Planner:
             max_retries=settings.anthropic_max_retries,
         )
 
-    async def generate_plan(self, seed_text: str, request_id: str) -> tuple[str, dict[str, Any]]:
-        snapshot = await self._fetch_catalog_snapshot(request_id)
+    async def generate_plan(
+        self,
+        seed_text: str,
+        request_id: str,
+        *,
+        dataset_id: str | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        snapshot = await self._fetch_catalog_snapshot(request_id, dataset_id=dataset_id)
         dataset = snapshot["dataset"]
         columns = snapshot["columns"]
         draft = await self._generate_draft(seed_text=seed_text, snapshot=snapshot)
@@ -74,30 +80,48 @@ class Planner:
                 "tags": dataset.get("tags"),
             },
             "columns": updated_columns,
-            "lineage": dataset.get("lineage_json"),
             "usage_examples": draft.usage_examples,
             "purpose": draft.purpose,
             "seed_text": seed_text,
         }
+        normalized_lineage = self._normalize_lineage(dataset.get("lineage_json"))
+        if normalized_lineage is not None:
+            payload["lineage"] = normalized_lineage
         return str(dataset["id"]), payload
 
-    async def _fetch_catalog_snapshot(self, request_id: str) -> dict[str, Any]:
+    async def _fetch_catalog_snapshot(
+        self,
+        request_id: str,
+        *,
+        dataset_id: str | None = None,
+    ) -> dict[str, Any]:
         base_url = str(self._settings.catalog_api_base_url).rstrip("/")
-        datasets_res = await self._http.get(
-            f"{base_url}/api/catalog/datasets",
-            params={"page": 1, "pageSize": 20},
-            timeout=10.0,
-        )
-        datasets_res.raise_for_status()
-        datasets_body = datasets_res.json()
-        datasets = datasets_body.get("data") or []
-        if not datasets:
-            raise ValueError("No catalog datasets available for planning")
+        if dataset_id:
+            dataset_res = await self._http.get(
+                f"{base_url}/api/catalog/datasets/{dataset_id}",
+                timeout=10.0,
+            )
+            dataset_res.raise_for_status()
+            dataset_body = dataset_res.json()
+            dataset = dataset_body.get("data")
+            if not isinstance(dataset, dict):
+                raise ValueError("Catalog dataset response is invalid")
+        else:
+            datasets_res = await self._http.get(
+                f"{base_url}/api/catalog/datasets",
+                params={"page": 1, "pageSize": 20},
+                timeout=10.0,
+            )
+            datasets_res.raise_for_status()
+            datasets_body = datasets_res.json()
+            datasets = datasets_body.get("data") or []
+            if not datasets:
+                raise ValueError("No catalog datasets available for planning")
+            dataset = datasets[0]
 
-        dataset = datasets[0]
-        dataset_id = str(dataset["id"])
+        resolved_dataset_id = str(dataset["id"])
         columns_res = await self._http.get(
-            f"{base_url}/api/catalog/datasets/{dataset_id}/columns",
+            f"{base_url}/api/catalog/datasets/{resolved_dataset_id}/columns",
             timeout=10.0,
         )
         columns_res.raise_for_status()
@@ -230,3 +254,19 @@ class Planner:
             if isinstance(decoded, dict):
                 return decoded
         raise ValueError("Claude response is not valid JSON object")
+
+    @staticmethod
+    def _normalize_lineage(raw_lineage: Any) -> dict[str, Any] | None:
+        if isinstance(raw_lineage, dict):
+            return raw_lineage
+        if isinstance(raw_lineage, str):
+            stripped = raw_lineage.strip()
+            if not stripped:
+                return None
+            try:
+                decoded = json.loads(stripped)
+            except json.JSONDecodeError:
+                return None
+            if isinstance(decoded, dict):
+                return decoded
+        return None

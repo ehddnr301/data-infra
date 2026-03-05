@@ -15,6 +15,7 @@ members = [
   "domains/discord/ingestion",
   "domains/members/ingestion",
   "domains/linkedin/ingestion",
+  "domains/integration/openclaw",
 ]
 
 [tool.ruff]
@@ -31,4 +32,4 @@ indent-style = "space"
 
 [tool.pytest.ini_options]
 testpaths = ["domains"]
-pythonpath = ["domains/github/ingestion/src", "domains/discord/ingestion/src", "domains/members/ingestion/src"]
+pythonpath = ["domains/github/ingestion/src", "domains/discord/ingestion/src", "domains/members/ingestion/src", "domains/integration/openclaw/src"]

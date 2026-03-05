@@ -38,7 +38,8 @@ def test_generate_plan_maps_descriptions(monkeypatch: pytest.MonkeyPatch) -> Non
         async with httpx.AsyncClient() as client:
             planner = Planner(_build_settings(), client, logging.getLogger("planner-test"))
 
-            async def fake_snapshot(request_id: str):
+            async def fake_snapshot(request_id: str, *, dataset_id: str | None = None):
+                assert dataset_id is None
                 return {
                     "dataset": {
                         "id": "github.push-events.v1",
@@ -46,6 +47,7 @@ def test_generate_plan_maps_descriptions(monkeypatch: pytest.MonkeyPatch) -> Non
                         "name": "Push Events",
                         "description": "old",
                         "schema_json": {"version": 1},
+                        "lineage_json": '{"version":1,"nodes":[],"edges":[]}',
                         "owner": "github-ingestion",
                         "tags": ["github"],
                     },
@@ -77,6 +79,95 @@ def test_generate_plan_maps_descriptions(monkeypatch: pytest.MonkeyPatch) -> Non
     assert payload["dataset"]["description"] == "new table description"
     assert payload["columns"][0]["description"] == "repository name"
     assert payload["purpose"] == "track activity"
+    assert payload["lineage"]["version"] == 1
+
+
+def test_fetch_catalog_snapshot_with_selected_dataset() -> None:
+    async def run() -> tuple[dict[str, Any], list[str]]:
+        called_paths: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            called_paths.append(request.url.path)
+            if request.url.path == "/api/catalog/datasets/github.watch-events.v1":
+                return httpx.Response(
+                    200,
+                    json={
+                        "success": True,
+                        "data": {
+                            "id": "github.watch-events.v1",
+                            "domain": "github",
+                            "name": "Watch Events",
+                            "description": "watch dataset",
+                        },
+                    },
+                )
+            if request.url.path == "/api/catalog/datasets/github.watch-events.v1/columns":
+                return httpx.Response(
+                    200,
+                    json={
+                        "success": True,
+                        "data": [
+                            {
+                                "dataset_id": "github.watch-events.v1",
+                                "column_name": "repo_name",
+                                "data_type": "text",
+                                "description": "repo",
+                                "is_pii": False,
+                            }
+                        ],
+                    },
+                )
+            return httpx.Response(404, json={"success": False})
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport, base_url="http://example.com") as client:
+            planner = Planner(_build_settings(), client, logging.getLogger("planner-test"))
+            snapshot = await planner._fetch_catalog_snapshot(
+                "req-2",
+                dataset_id="github.watch-events.v1",
+            )
+            return snapshot, called_paths
+
+    snapshot, called_paths = asyncio.run(run())
+    assert snapshot["dataset"]["id"] == "github.watch-events.v1"
+    assert called_paths == [
+        "/api/catalog/datasets/github.watch-events.v1",
+        "/api/catalog/datasets/github.watch-events.v1/columns",
+    ]
+
+
+def test_generate_plan_omits_invalid_lineage_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def run() -> dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            planner = Planner(_build_settings(), client, logging.getLogger("planner-test"))
+
+            async def fake_snapshot(request_id: str, *, dataset_id: str | None = None):
+                return {
+                    "dataset": {
+                        "id": "github.push-events.v1",
+                        "domain": "github",
+                        "name": "Push Events",
+                        "description": "old",
+                        "lineage_json": "not-json",
+                    },
+                    "columns": [],
+                }
+
+            async def fake_draft(seed_text: str, snapshot):
+                return PlanDraft(
+                    table_description="new table description",
+                    column_descriptions={},
+                    usage_examples=["monthly trend"],
+                    purpose="track activity",
+                )
+
+            monkeypatch.setattr(planner, "_fetch_catalog_snapshot", fake_snapshot)
+            monkeypatch.setattr(planner, "_generate_draft", fake_draft)
+            _dataset_id, payload = await planner.generate_plan("seed", "req-1")
+            return payload
+
+    payload = asyncio.run(run())
+    assert "lineage" not in payload
 
 
 def test_generate_draft_retries_with_compact_snapshot(

@@ -15,6 +15,12 @@ from planner import Planner
 
 router = APIRouter(prefix="/slack")
 
+PLAN_MODAL_CALLBACK_ID = "openclaw_plan_modal"
+DATASET_BLOCK_ID = "dataset_block"
+DATASET_ACTION_ID = "dataset_select"
+SEED_BLOCK_ID = "seed_block"
+SEED_ACTION_ID = "seed_input"
+
 
 def _iso_now() -> str:
     return datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -59,6 +65,121 @@ def _plan_error_message(exc: Exception) -> tuple[str, str]:
             "anthropic_timeout",
         )
     return (raw, "plan_generation_error")
+
+
+def _dataset_option(dataset: dict[str, Any]) -> dict[str, Any] | None:
+    dataset_id = str(dataset.get("id") or "").strip()
+    if not dataset_id:
+        return None
+    domain = str(dataset.get("domain") or "unknown").strip()
+    name = str(dataset.get("name") or dataset_id).strip()
+    label = f"{dataset_id} | {name} ({domain})"
+    if len(label) > 75:
+        label = label[:72] + "..."
+    return {
+        "text": {
+            "type": "plain_text",
+            "text": label,
+        },
+        "value": dataset_id,
+    }
+
+
+def _build_plan_modal_view(*, initial_seed: str, channel_id: str) -> dict[str, Any]:
+    return {
+        "type": "modal",
+        "callback_id": PLAN_MODAL_CALLBACK_ID,
+        "private_metadata": json.dumps({"channel_id": channel_id}, ensure_ascii=False),
+        "title": {"type": "plain_text", "text": "Clawbot Plan"},
+        "submit": {"type": "plain_text", "text": "Generate"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": DATASET_BLOCK_ID,
+                "label": {"type": "plain_text", "text": "Dataset"},
+                "element": {
+                    "type": "external_select",
+                    "action_id": DATASET_ACTION_ID,
+                    "placeholder": {"type": "plain_text", "text": "Select dataset"},
+                    "min_query_length": 0,
+                },
+            },
+            {
+                "type": "input",
+                "block_id": SEED_BLOCK_ID,
+                "label": {"type": "plain_text", "text": "Natural language request"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": SEED_ACTION_ID,
+                    "multiline": True,
+                    "max_length": 3000,
+                    "initial_value": initial_seed[:3000],
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "Describe what to improve for this dataset",
+                    },
+                },
+            },
+        ],
+    }
+
+
+async def _fetch_dataset_options(
+    runtime: Any, *, request_id: str, query: str
+) -> list[dict[str, Any]]:
+    base_url = str(runtime.settings.catalog_api_base_url).rstrip("/")
+    try:
+        response = await runtime.http_client.get(
+            f"{base_url}/api/catalog/datasets",
+            params={"page": 1, "pageSize": 100},
+            timeout=2.0,
+        )
+        response.raise_for_status()
+        body = response.json()
+        datasets = body.get("data") or []
+    except Exception as exc:
+        runtime.logger.warning(
+            "dataset options load failed",
+            extra={
+                "event_code": "OCW0301",
+                "request_id": request_id,
+                "failure_cause": str(exc),
+                "result": "degraded",
+            },
+        )
+        return []
+    keyword = query.strip().lower()
+
+    options: list[dict[str, Any]] = []
+    for dataset in datasets:
+        if not isinstance(dataset, dict):
+            continue
+        haystack = " ".join(
+            [
+                str(dataset.get("id") or ""),
+                str(dataset.get("name") or ""),
+                str(dataset.get("domain") or ""),
+            ]
+        ).lower()
+        if keyword and keyword not in haystack:
+            continue
+        option = _dataset_option(dataset)
+        if option is None:
+            continue
+        options.append(option)
+        if len(options) >= 100:
+            break
+
+    runtime.logger.info(
+        "dataset options loaded",
+        extra={
+            "event_code": "OCW0101",
+            "request_id": request_id,
+            "result": "success",
+        },
+    )
+    return options
 
 
 def _plan_blocks(
@@ -111,6 +232,7 @@ async def _slack_api_post(
     method: str,
     payload: dict[str, Any],
     request_id: str,
+    timeout_seconds: float = 10.0,
 ) -> dict[str, Any]:
     response = await runtime.http_client.post(
         f"https://slack.com/api/{method}",
@@ -119,7 +241,7 @@ async def _slack_api_post(
             "Content-Type": "application/json; charset=utf-8",
         },
         json=payload,
-        timeout=10.0,
+        timeout=timeout_seconds,
     )
     response.raise_for_status()
     body = response.json()
@@ -156,6 +278,7 @@ async def slash_command(request: Request, background_tasks: BackgroundTasks) -> 
     )
     parsed = parse_qs(raw_body.decode("utf-8"), keep_blank_values=True)
     text = (parsed.get("text") or [""])[0]
+    trigger_id = (parsed.get("trigger_id") or [""])[0]
     request_id = f"req_{int(time.time() * 1000)}"
     user_id = (parsed.get("user_id") or [""])[0]
     channel_id = (parsed.get("channel_id") or [runtime.settings.slack_channel_id])[0]
@@ -172,14 +295,70 @@ async def slash_command(request: Request, background_tasks: BackgroundTasks) -> 
     )
 
     seed = _extract_plan_seed(text)
-    background_tasks.add_task(_handle_plan_async, runtime, seed, request_id, user_id, channel_id)
+    if not trigger_id:
+        background_tasks.add_task(
+            _handle_plan_async, runtime, seed, request_id, user_id, channel_id
+        )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "response_type": "ephemeral",
+                "text": "분석 중입니다. 잠시 후 #clawbot-ops에 계획을 게시합니다.",
+            },
+        )
+
+    view = _build_plan_modal_view(initial_seed=seed, channel_id=channel_id)
+    try:
+        await _slack_api_post(
+            runtime,
+            method="views.open",
+            payload={
+                "trigger_id": trigger_id,
+                "view": view,
+            },
+            request_id=request_id,
+            timeout_seconds=2.5,
+        )
+    except Exception as exc:
+        runtime.logger.error(
+            "modal open failed, falling back to direct plan handling",
+            extra={
+                "event_code": "OCW0901",
+                "request_id": request_id,
+                "failure_code": "modal_open_failed",
+                "failure_cause": str(exc),
+                "result": "degraded",
+            },
+        )
+        background_tasks.add_task(
+            _handle_plan_async,
+            runtime,
+            seed,
+            request_id,
+            user_id,
+            channel_id,
+        )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "response_type": "ephemeral",
+                "text": "입력 창 열기에 실패해 기본 모드로 처리합니다. 잠시 후 #clawbot-ops를 확인해 주세요.",
+            },
+        )
     return JSONResponse(
         status_code=200,
         content={
             "response_type": "ephemeral",
-            "text": "분석 중입니다. 잠시 후 #clawbot-ops에 계획을 게시합니다.",
+            "text": "카탈로그 선택 창을 열었습니다. dataset과 요청 내용을 입력해 주세요.",
         },
     )
+
+
+@router.post("/command/")
+async def slash_command_trailing_slash(
+    request: Request, background_tasks: BackgroundTasks
+) -> JSONResponse:
+    return await slash_command(request, background_tasks)
 
 
 @router.post("/interactive")
@@ -199,11 +378,115 @@ async def interactive(request: Request, background_tasks: BackgroundTasks) -> JS
 
     parsed = parse_qs(raw_body.decode("utf-8"), keep_blank_values=True)
     payload_raw = (parsed.get("payload") or ["{}"])[0]
-    payload = json.loads(payload_raw)
+    try:
+        payload = json.loads(payload_raw)
+    except json.JSONDecodeError:
+        runtime.logger.error(
+            "interactive payload decode failed",
+            extra={
+                "event_code": "OCW0901",
+                "failure_code": "interactive_payload_decode_failed",
+                "result": "failed",
+            },
+        )
+        return JSONResponse(status_code=200, content={"ok": True, "timestamp": _iso_now()})
+
     request_id = f"req_{int(time.time() * 1000)}"
+    payload_type = str(payload.get("type") or "")
+    runtime.logger.info(
+        "interactive payload received",
+        extra={
+            "event_code": "OCW0002",
+            "request_id": request_id,
+            "payload_type": payload_type or "unknown",
+            "result": "success",
+        },
+    )
+
+    try:
+        if payload_type == "block_suggestion":
+            query = str(payload.get("value") or "")
+            options = await _fetch_dataset_options(runtime, request_id=request_id, query=query)
+            return JSONResponse(status_code=200, content={"options": options})
+
+        if payload_type == "view_submission":
+            view = payload.get("view") or {}
+            values = (view.get("state") or {}).get("values") or {}
+            dataset_values = (values.get(DATASET_BLOCK_ID) or {}).get(DATASET_ACTION_ID) or {}
+            selected_option = dataset_values.get("selected_option") or {}
+            selected_dataset_id = str(selected_option.get("value") or "").strip()
+            seed_values = (values.get(SEED_BLOCK_ID) or {}).get(SEED_ACTION_ID) or {}
+            seed = str(seed_values.get("value") or "").strip()
+
+            errors: dict[str, str] = {}
+            if not selected_dataset_id:
+                errors[DATASET_BLOCK_ID] = "dataset을 선택해 주세요."
+            if not seed:
+                errors[SEED_BLOCK_ID] = "요청 문장을 입력해 주세요."
+            if errors:
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "response_action": "errors",
+                        "errors": errors,
+                    },
+                )
+
+            private_metadata_raw = str(view.get("private_metadata") or "{}")
+            private_metadata: dict[str, Any]
+            try:
+                parsed_metadata = json.loads(private_metadata_raw)
+                private_metadata = parsed_metadata if isinstance(parsed_metadata, dict) else {}
+            except json.JSONDecodeError:
+                private_metadata = {}
+
+            channel_id = str(
+                private_metadata.get("channel_id") or runtime.settings.slack_channel_id
+            )
+            user_id = str(((payload.get("user") or {}).get("id")) or "")
+            background_tasks.add_task(
+                _handle_plan_async,
+                runtime,
+                seed,
+                request_id,
+                user_id,
+                channel_id,
+                selected_dataset_id,
+            )
+            return JSONResponse(status_code=200, content={"response_action": "clear"})
+    except Exception as exc:
+        runtime.logger.error(
+            "interactive handling failed",
+            extra={
+                "event_code": "OCW0901",
+                "request_id": request_id,
+                "failure_code": "interactive_handling_failed",
+                "failure_cause": str(exc),
+                "payload_type": payload_type,
+                "result": "failed",
+            },
+        )
+        if payload_type == "view_submission":
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "response_action": "errors",
+                    "errors": {
+                        SEED_BLOCK_ID: "요청 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+                    },
+                },
+            )
+        return JSONResponse(status_code=200, content={"ok": True, "timestamp": _iso_now()})
 
     background_tasks.add_task(_handle_interactive_async, runtime, payload, request_id)
     return JSONResponse(status_code=200, content={"ok": True, "timestamp": _iso_now()})
+
+
+@router.post("/interactive/")
+async def interactive_trailing_slash(
+    request: Request, background_tasks: BackgroundTasks
+) -> JSONResponse:
+    return await interactive(request, background_tasks)
 
 
 async def _handle_plan_async(
@@ -212,10 +495,15 @@ async def _handle_plan_async(
     request_id: str,
     user_id: str,
     channel_id: str,
+    selected_dataset_id: str | None = None,
 ) -> None:
     planner = Planner(runtime.settings, runtime.http_client, runtime.logger)
     try:
-        dataset_id, plan_payload = await planner.generate_plan(seed, request_id)
+        dataset_id, plan_payload = await planner.generate_plan(
+            seed,
+            request_id,
+            dataset_id=selected_dataset_id,
+        )
         plan_record = runtime.plan_store.create(
             request_id=request_id,
             slack_user_id=user_id,
