@@ -56,47 +56,44 @@ DEFAULT_ARGS = {
     default_args=DEFAULT_ARGS,
 )
 def github_rest_api_hourly():
-    @task(task_id="resolve_run_ds")
-    def resolve_run_ds(**context) -> str:
-        logical_date = context.get("logical_date")
-        if logical_date is not None:
-            return logical_date.strftime("%Y-%m-%d")
+    def _resolve_target_hour_anchor(**context):
+        """이 DAG 실행에서 처리할 '완료된 이전 1시간' 앵커를 계산한다."""
+        data_interval_end = context.get("data_interval_end")
+        if data_interval_end is not None:
+            return pendulum.instance(data_interval_end).subtract(hours=1)
 
         dag_run = context.get("dag_run")
+        dag_run_data_interval_end = getattr(dag_run, "data_interval_end", None)
+        if dag_run_data_interval_end is not None:
+            return pendulum.instance(dag_run_data_interval_end).subtract(hours=1)
+
+        logical_date = context.get("logical_date")
+        if logical_date is not None:
+            return pendulum.instance(logical_date).subtract(hours=1)
+
         dag_run_logical_date = getattr(dag_run, "logical_date", None)
         if dag_run_logical_date is not None:
-            return dag_run_logical_date.strftime("%Y-%m-%d")
+            return pendulum.instance(dag_run_logical_date).subtract(hours=1)
 
         run_id = context.get("run_id")
         if isinstance(run_id, str) and "__" in run_id:
             _, _, timestamp_part = run_id.partition("__")
             try:
-                return pendulum.parse(timestamp_part).strftime("%Y-%m-%d")
+                return pendulum.parse(timestamp_part).subtract(hours=1)
             except Exception:
                 pass
 
-        raise ValueError("run ds를 컨텍스트에서 결정할 수 없습니다")
+        raise ValueError("target hour anchor를 컨텍스트에서 결정할 수 없습니다")
+
+    @task(task_id="resolve_run_ds")
+    def resolve_run_ds(**context) -> str:
+        anchor = _resolve_target_hour_anchor(**context)
+        return anchor.strftime("%Y-%m-%d")
 
     @task(task_id="resolve_run_hour")
     def resolve_run_hour(**context) -> str:
-        logical_date = context.get("logical_date")
-        if logical_date is not None:
-            return logical_date.strftime("%H")
-
-        dag_run = context.get("dag_run")
-        dag_run_logical_date = getattr(dag_run, "logical_date", None)
-        if dag_run_logical_date is not None:
-            return dag_run_logical_date.strftime("%H")
-
-        run_id = context.get("run_id")
-        if isinstance(run_id, str) and "__" in run_id:
-            _, _, timestamp_part = run_id.partition("__")
-            try:
-                return pendulum.parse(timestamp_part).strftime("%H")
-            except Exception:
-                pass
-
-        raise ValueError("run hour를 컨텍스트에서 결정할 수 없습니다")
+        anchor = _resolve_target_hour_anchor(**context)
+        return anchor.strftime("%H")
 
     run_ds_template = "{{ ti.xcom_pull(task_ids='resolve_run_ds') }}"
     run_hour_template = "{{ ti.xcom_pull(task_ids='resolve_run_hour') }}"

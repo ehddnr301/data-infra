@@ -87,6 +87,7 @@ export type DatasetPreviewResponse = {
   meta: {
     limit: number
     returned: number
+    total_rows: number | null
     reason?: 'dataset-not-mapped' | 'empty-source'
   }
 }

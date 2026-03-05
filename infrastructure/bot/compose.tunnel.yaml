@@ -1,0 +1,16 @@
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: clawbot-cloudflared
+    command: tunnel run
+    env_file:
+      - path: .env.tunnel
+        required: false
+    restart: unless-stopped
+    networks:
+      - clawbot-net
+
+networks:
+  clawbot-net:
+    external: true
+    name: clawbot-net

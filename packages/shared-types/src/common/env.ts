@@ -57,6 +57,7 @@ export interface CoreBindings {
 export interface RuntimeVars {
   ENVIRONMENT?: 'dev' | 'staging' | 'prod'
   LOG_LEVEL?: 'debug' | 'info' | 'warn' | 'error'
+  INTERNAL_API_TOKEN?: string
 }
 
 export type Env = CoreBindings & Partial<RuntimeVars>
