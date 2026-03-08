@@ -190,7 +190,24 @@ def _plan_blocks(
     purpose = payload.get("purpose") or ""
     description = payload.get("dataset", {}).get("description") or ""
     usage_preview = usage[0] if usage else "(none)"
-    return [
+    columns = payload.get("columns") or []
+    described_columns = [
+        col
+        for col in columns
+        if isinstance(col, dict) and str(col.get("description") or "").strip()
+    ]
+    preview_limit = 6
+    preview_lines: list[str] = []
+    for col in described_columns[:preview_limit]:
+        name = str(col.get("column_name") or "").strip()
+        col_desc = str(col.get("description") or "").strip()
+        if not name:
+            continue
+        if len(col_desc) > 90:
+            col_desc = col_desc[:87].rstrip() + "..."
+        preview_lines.append(f"- `{name}`: {col_desc}")
+
+    blocks: list[dict[str, Any]] = [
         {
             "type": "section",
             "text": {
@@ -200,10 +217,29 @@ def _plan_blocks(
                     f"dataset: `{dataset_id}`\n"
                     f"description: {description}\n"
                     f"usage_example: {usage_preview}\n"
-                    f"purpose: {purpose}"
+                    f"purpose: {purpose}\n"
+                    f"columns_with_description: {len(described_columns)}"
                 ),
             },
         },
+    ]
+
+    if preview_lines:
+        extra_count = len(described_columns) - len(preview_lines)
+        preview_text = "\n".join(preview_lines)
+        if extra_count > 0:
+            preview_text += f"\n- ... and {extra_count} more columns"
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Column Description Preview*\n{preview_text}",
+                },
+            }
+        )
+
+    blocks.append(
         {
             "type": "actions",
             "elements": [
@@ -223,7 +259,38 @@ def _plan_blocks(
                 },
             ],
         },
-    ]
+    )
+    return blocks
+
+
+def _column_description_thread_chunks(
+    payload: dict[str, Any], *, lines_per_message: int = 8
+) -> list[str]:
+    columns = payload.get("columns") or []
+    described_columns: list[tuple[str, str]] = []
+    for col in columns:
+        if not isinstance(col, dict):
+            continue
+        name = str(col.get("column_name") or "").strip()
+        desc = str(col.get("description") or "").strip()
+        if not name or not desc:
+            continue
+        if len(desc) > 180:
+            desc = desc[:177].rstrip() + "..."
+        described_columns.append((name, desc))
+
+    if not described_columns:
+        return []
+
+    safe_lines = max(1, lines_per_message)
+    chunks: list[str] = []
+    total = len(described_columns)
+    for start in range(0, total, safe_lines):
+        end = min(start + safe_lines, total)
+        lines = [f"- `{name}`: {desc}" for name, desc in described_columns[start:end]]
+        header = f"🧾 Column description details ({start + 1}-{end}/{total})"
+        chunks.append(header + "\n" + "\n".join(lines))
+    return chunks
 
 
 async def _slack_api_post(
@@ -529,6 +596,30 @@ async def _handle_plan_async(
         )
         if isinstance(posted.get("ts"), str):
             runtime.plan_store.set_message_ts(plan_record.plan_id, posted["ts"])
+            thread_ts = posted["ts"]
+            for chunk in _column_description_thread_chunks(plan_payload):
+                try:
+                    await _slack_api_post(
+                        runtime,
+                        method="chat.postMessage",
+                        payload={
+                            "channel": runtime.settings.slack_channel_id,
+                            "thread_ts": thread_ts,
+                            "text": chunk,
+                        },
+                        request_id=request_id,
+                    )
+                except Exception as exc:
+                    runtime.logger.warning(
+                        "column detail thread post failed",
+                        extra={
+                            "event_code": "OCW0301",
+                            "request_id": request_id,
+                            "plan_id": plan_record.plan_id,
+                            "failure_cause": str(exc),
+                            "result": "degraded",
+                        },
+                    )
         runtime.logger.info(
             "plan generated",
             extra={
