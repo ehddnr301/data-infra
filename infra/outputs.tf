@@ -3,6 +3,11 @@ output "r2_bucket_name" {
   value       = cloudflare_r2_bucket.github_archive_raw.name
 }
 
+output "exp_r2_bucket_name" {
+  description = "실험팀 전용 R2 버킷 이름"
+  value       = cloudflare_r2_bucket.exp_bucket.name
+}
+
 output "d1_database_id" {
   description = "D1 데이터베이스 ID (wrangler.toml에 입력)"
   value       = cloudflare_d1_database.pseudolab_main.id
@@ -11,6 +16,16 @@ output "d1_database_id" {
 output "d1_database_name" {
   description = "D1 데이터베이스 이름"
   value       = cloudflare_d1_database.pseudolab_main.name
+}
+
+output "exp_d1_database_id" {
+  description = "실험팀 전용 D1 데이터베이스 ID"
+  value       = cloudflare_d1_database.exp_db.id
+}
+
+output "exp_d1_database_name" {
+  description = "실험팀 전용 D1 데이터베이스 이름"
+  value       = cloudflare_d1_database.exp_db.name
 }
 
 output "kv_namespace_id" {
