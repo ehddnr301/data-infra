@@ -1,6 +1,6 @@
 import { Sidebar } from '@/components/ui/sidebar'
 import { Link } from '@tanstack/react-router'
-import { BookOpen, Database, Info, LayoutDashboard } from 'lucide-react'
+import { BookOpen, Github, Info, LayoutDashboard, MessageSquare, Store } from 'lucide-react'
 
 type AppSidebarProps = {
   className?: string
@@ -20,12 +20,30 @@ export function AppSidebar({ className, onNavigate }: AppSidebarProps) {
           대시보드
         </Link>
         <Link
-          to="/datasets"
+          to="/listings"
           className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-black/5"
           onClick={onNavigate}
         >
-          <Database className="h-4 w-4" />
-          데이터셋
+          <Store className="h-4 w-4" />
+          리스팅
+        </Link>
+        <Link
+          to="/domains/$domainKey"
+          params={{ domainKey: 'github' }}
+          className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-black/5"
+          onClick={onNavigate}
+        >
+          <Github className="h-4 w-4" />
+          GitHub hub
+        </Link>
+        <Link
+          to="/domains/$domainKey"
+          params={{ domainKey: 'discord' }}
+          className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-black/5"
+          onClick={onNavigate}
+        >
+          <MessageSquare className="h-4 w-4" />
+          Discord hub
         </Link>
         <Link
           to="/glossary"

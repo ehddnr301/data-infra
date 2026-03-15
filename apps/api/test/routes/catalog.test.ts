@@ -81,6 +81,22 @@ const DatasetPreviewResponseSchema = z.object({
   }),
 })
 
+const CatalogDatasetSchema = z.object({
+  id: z.string(),
+  domain: z.enum(['github', 'discord', 'linkedin', 'members']),
+  name: z.string(),
+  description: z.string(),
+  schema_json: z.string().nullable(),
+  lineage_json: z.string().nullable(),
+  owner: z.string().nullable(),
+  tags: z.string().nullable(),
+  purpose: z.string().nullable(),
+  limitations: z.array(z.string()),
+  usage_examples: z.array(z.string()),
+  created_at: z.string(),
+  updated_at: z.string(),
+})
+
 const SnapshotApplyResultSchema = z.object({
   applied: z.literal(true),
   dataset: z.object({
@@ -100,7 +116,7 @@ const SnapshotApplyResultSchema = z.object({
 
 beforeAll(async () => {
   await db.exec(
-    'CREATE TABLE IF NOT EXISTS catalog_datasets (id TEXT PRIMARY KEY, domain TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL, schema_json TEXT, lineage_json TEXT, owner TEXT, tags TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);',
+    'CREATE TABLE IF NOT EXISTS catalog_datasets (id TEXT PRIMARY KEY, domain TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL, schema_json TEXT, lineage_json TEXT, owner TEXT, tags TEXT, purpose TEXT, limitations TEXT, usage_examples TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);',
   )
   await db.exec(
     'CREATE TABLE IF NOT EXISTS catalog_columns (dataset_id TEXT NOT NULL, column_name TEXT NOT NULL, data_type TEXT NOT NULL, description TEXT, is_pii INTEGER NOT NULL DEFAULT 0, examples TEXT, PRIMARY KEY (dataset_id, column_name), FOREIGN KEY (dataset_id) REFERENCES catalog_datasets(id) ON DELETE CASCADE);',
@@ -132,7 +148,7 @@ beforeEach(async () => {
 
   await db
     .prepare(
-      'INSERT INTO catalog_datasets (id, domain, name, description, schema_json, lineage_json, owner, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO catalog_datasets (id, domain, name, description, schema_json, lineage_json, owner, tags, purpose, limitations, usage_examples, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     .bind(
       'ds.github.repo.v1',
@@ -143,6 +159,9 @@ beforeEach(async () => {
       null,
       'qa',
       '["github"]',
+      'Repository analytics',
+      '["delayed ingestion"]',
+      '["weekly activity report"]',
       '2025-01-01T00:00:00.000Z',
       '2025-01-01T00:00:00.000Z',
     )
@@ -150,7 +169,7 @@ beforeEach(async () => {
 
   await db
     .prepare(
-      'INSERT INTO catalog_datasets (id, domain, name, description, schema_json, lineage_json, owner, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO catalog_datasets (id, domain, name, description, schema_json, lineage_json, owner, tags, purpose, limitations, usage_examples, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     .bind(
       'github.push-events.v1',
@@ -161,6 +180,9 @@ beforeEach(async () => {
       null,
       'qa',
       '["github"]',
+      null,
+      null,
+      null,
       '2025-01-01T00:00:00.000Z',
       '2025-01-01T00:00:00.000Z',
     )
@@ -168,7 +190,7 @@ beforeEach(async () => {
 
   await db
     .prepare(
-      'INSERT INTO catalog_datasets (id, domain, name, description, schema_json, lineage_json, owner, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO catalog_datasets (id, domain, name, description, schema_json, lineage_json, owner, tags, purpose, limitations, usage_examples, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     .bind(
       'discord.messages.v1',
@@ -179,6 +201,9 @@ beforeEach(async () => {
       null,
       'qa',
       '["discord"]',
+      null,
+      null,
+      null,
       '2025-01-01T00:00:00.000Z',
       '2025-01-01T00:00:00.000Z',
     )
@@ -186,7 +211,7 @@ beforeEach(async () => {
 
   await db
     .prepare(
-      'INSERT INTO catalog_datasets (id, domain, name, description, schema_json, lineage_json, owner, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO catalog_datasets (id, domain, name, description, schema_json, lineage_json, owner, tags, purpose, limitations, usage_examples, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     .bind(
       'discord.watermarks.v1',
@@ -197,6 +222,9 @@ beforeEach(async () => {
       null,
       'qa',
       '["discord"]',
+      null,
+      null,
+      null,
       '2025-01-01T00:00:00.000Z',
       '2025-01-01T00:00:00.000Z',
     )
@@ -266,6 +294,57 @@ describe('datasets routes', () => {
 
     const parsed = paginatedSchema(z.object({}).passthrough()).safeParse(await res.json())
     expect(parsed.success).toBe(true)
+  })
+
+  it('returns normalized dataset metadata in list and detail responses', async () => {
+    const listRes = await SELF.fetch('http://example.com/api/catalog/datasets')
+    expect(listRes.status).toBe(200)
+    expectJson(listRes)
+
+    const listParsed = paginatedSchema(CatalogDatasetSchema).safeParse(await listRes.json())
+    expect(listParsed.success).toBe(true)
+    if (!listParsed.success) {
+      return
+    }
+
+    const dataset = listParsed.data.data.find((item) => item.id === 'ds.github.repo.v1')
+    expect(dataset?.purpose).toBe('Repository analytics')
+    expect(dataset?.limitations).toEqual(['delayed ingestion'])
+    expect(dataset?.usage_examples).toEqual(['weekly activity report'])
+
+    const detailRes = await SELF.fetch('http://example.com/api/catalog/datasets/ds.github.repo.v1')
+    expect(detailRes.status).toBe(200)
+    expectJson(detailRes)
+
+    const detailParsed = apiSuccessSchema(CatalogDatasetSchema).safeParse(await detailRes.json())
+    expect(detailParsed.success).toBe(true)
+    if (!detailParsed.success) {
+      return
+    }
+
+    expect(detailParsed.data.data.purpose).toBe('Repository analytics')
+    expect(detailParsed.data.data.limitations).toEqual(['delayed ingestion'])
+    expect(detailParsed.data.data.usage_examples).toEqual(['weekly activity report'])
+  })
+
+  it('normalizes invalid dataset metadata JSON arrays to empty arrays', async () => {
+    await db
+      .prepare('UPDATE catalog_datasets SET limitations = ?, usage_examples = ? WHERE id = ?')
+      .bind('not-json', '{"bad":true}', 'ds.github.repo.v1')
+      .run()
+
+    const res = await SELF.fetch('http://example.com/api/catalog/datasets/ds.github.repo.v1')
+    expect(res.status).toBe(200)
+    expectJson(res)
+
+    const parsed = apiSuccessSchema(CatalogDatasetSchema).safeParse(await res.json())
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) {
+      return
+    }
+
+    expect(parsed.data.data.limitations).toEqual([])
+    expect(parsed.data.data.usage_examples).toEqual([])
   })
 
   it('returns 404 for non-existent dataset', async () => {
@@ -556,6 +635,9 @@ describe('dataset snapshot route', () => {
         schema_json: { version: 1, kind: 'dataset' },
         owner: 'etl',
         tags: ['github', 'events'],
+        purpose: 'Track destructive repository events',
+        limitations: ['No private repositories'],
+        usage_examples: ['Audit deleted branches'],
       },
       columns: [
         {
@@ -598,7 +680,7 @@ describe('dataset snapshot route', () => {
 
     const dataset = await db
       .prepare(
-        'SELECT id, domain, name, schema_json, owner, tags FROM catalog_datasets WHERE id = ?',
+        'SELECT id, domain, name, schema_json, owner, tags, purpose, limitations, usage_examples FROM catalog_datasets WHERE id = ?',
       )
       .bind('github.delete-events.v1')
       .first<Record<string, unknown>>()
@@ -608,6 +690,9 @@ describe('dataset snapshot route', () => {
     expect(dataset?.owner).toBe('etl')
     expect(dataset?.schema_json).toBe('{"version":1,"kind":"dataset"}')
     expect(dataset?.tags).toBe('["github","events"]')
+    expect(dataset?.purpose).toBe('Track destructive repository events')
+    expect(dataset?.limitations).toBe('["No private repositories"]')
+    expect(dataset?.usage_examples).toBe('["Audit deleted branches"]')
 
     const columns = await db
       .prepare(
@@ -621,6 +706,18 @@ describe('dataset snapshot route', () => {
   })
 
   it('updates dataset while preserving created_at and keeps non-included columns', async () => {
+    await db
+      .prepare(
+        'UPDATE catalog_datasets SET purpose = ?, limitations = ?, usage_examples = ? WHERE id = ?',
+      )
+      .bind(
+        'Existing purpose',
+        '["existing limitation"]',
+        '["existing example"]',
+        'ds.github.repo.v1',
+      )
+      .run()
+
     await db
       .prepare(
         'INSERT INTO catalog_columns (dataset_id, column_name, data_type, description, is_pii, examples) VALUES (?, ?, ?, ?, ?, ?)',
@@ -687,19 +784,57 @@ describe('dataset snapshot route', () => {
     expect(parsed.data.data.columns).toEqual({ added: 1, updated: 1, unchanged: 0 })
 
     const after = await db
-      .prepare('SELECT created_at, name, owner, tags FROM catalog_datasets WHERE id = ?')
+      .prepare(
+        'SELECT created_at, name, owner, tags, purpose, limitations, usage_examples FROM catalog_datasets WHERE id = ?',
+      )
       .bind('ds.github.repo.v1')
       .first<Record<string, unknown>>()
     expect(after?.created_at).toBe(before?.created_at)
     expect(after?.name).toBe('GitHub Repo Dataset Updated')
     expect(after?.owner).toBe('platform')
     expect(after?.tags).toBe('github,updated')
+    expect(after?.purpose).toBe('Existing purpose')
+    expect(after?.limitations).toBe('["existing limitation"]')
+    expect(after?.usage_examples).toBe('["existing example"]')
 
     const legacyCol = await db
       .prepare('SELECT column_name FROM catalog_columns WHERE dataset_id = ? AND column_name = ?')
       .bind('ds.github.repo.v1', 'legacy_col')
       .first<Record<string, unknown>>()
     expect(legacyCol?.column_name).toBe('legacy_col')
+  })
+
+  it('clears dataset metadata when null is supplied', async () => {
+    const res = await SELF.fetch(
+      'http://example.com/api/catalog/datasets/ds.github.repo.v1/snapshot',
+      {
+        method: 'PUT',
+        headers: InternalAuthHeaders,
+        body: JSON.stringify({
+          dataset: {
+            id: 'ds.github.repo.v1',
+            domain: 'github',
+            name: 'GitHub Repo Dataset',
+            description: 'Dataset for tests',
+            purpose: null,
+            limitations: null,
+            usage_examples: null,
+          },
+          columns: [],
+        }),
+      },
+    )
+
+    expect(res.status).toBe(200)
+
+    const dataset = await db
+      .prepare('SELECT purpose, limitations, usage_examples FROM catalog_datasets WHERE id = ?')
+      .bind('ds.github.repo.v1')
+      .first<Record<string, unknown>>()
+
+    expect(dataset?.purpose).toBeNull()
+    expect(dataset?.limitations).toBeNull()
+    expect(dataset?.usage_examples).toBeNull()
   })
 
   it('validates dataset id format, id mismatch, and domain enum', async () => {
@@ -760,6 +895,29 @@ describe('dataset snapshot route', () => {
     )
     expect(invalidDomainRes.status).toBe(400)
     expectProblemJson(invalidDomainRes)
+  })
+
+  it('rejects top-level dataset metadata fields', async () => {
+    const res = await SELF.fetch(
+      'http://example.com/api/catalog/datasets/github.valid.v1/snapshot',
+      {
+        method: 'PUT',
+        headers: InternalAuthHeaders,
+        body: JSON.stringify({
+          dataset: {
+            id: 'github.valid.v1',
+            domain: 'github',
+            name: 'Valid',
+            description: 'Valid',
+          },
+          purpose: 'top-level should fail',
+          columns: [],
+        }),
+      },
+    )
+
+    expect(res.status).toBe(400)
+    expectProblemJson(res)
   })
 })
 

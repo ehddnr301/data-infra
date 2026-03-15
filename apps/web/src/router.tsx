@@ -1,11 +1,12 @@
 import { HomePage } from '@/routes'
 import { RootErrorComponent, RootNotFoundComponent, RootRouteComponent } from '@/routes/__root'
 import { AboutPage } from '@/routes/about'
-import { DatasetsPage } from '@/routes/datasets'
-import { DatasetDetailPage } from '@/routes/datasets/$datasetId'
+import { DomainDetailPage } from '@/routes/domains/$domainKey'
 import { GlossaryListPage } from '@/routes/glossary'
 import { GlossaryDetailPage } from '@/routes/glossary/$termId'
 import { GlossaryFormPage } from '@/routes/glossary/form'
+import { ListingsPage } from '@/routes/listings'
+import { ListingDetailPage } from '@/routes/listings/$domain/$listingSlug'
 import { SearchPage } from '@/routes/search'
 import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 
@@ -25,18 +26,6 @@ const aboutRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/about',
   component: AboutPage,
-})
-
-const datasetsRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/datasets',
-  component: DatasetsPage,
-})
-
-const datasetDetailRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/datasets/$datasetId',
-  component: DatasetDetailPage,
 })
 
 const glossaryRoute = createRoute({
@@ -69,16 +58,35 @@ const searchRoute = createRoute({
   component: SearchPage,
 })
 
+const listingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/listings',
+  component: ListingsPage,
+})
+
+const listingDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/listings/$domain/$listingSlug',
+  component: ListingDetailPage,
+})
+
+const domainDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/domains/$domainKey',
+  component: DomainDetailPage,
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   aboutRoute,
-  datasetsRoute,
-  datasetDetailRoute,
   glossaryRoute,
   glossaryNewRoute,
   glossaryDetailRoute,
   glossaryEditRoute,
   searchRoute,
+  listingsRoute,
+  listingDetailRoute,
+  domainDetailRoute,
 ])
 
 export const router = createRouter({

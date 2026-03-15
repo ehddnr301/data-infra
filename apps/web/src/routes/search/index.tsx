@@ -6,7 +6,7 @@ import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { useRecentSearches } from '@/hooks/use-recent-searches'
 import { useIntegratedSearch } from '@/hooks/use-search'
-import type { DomainName, SearchType } from '@pseudolab/shared-types'
+import { type DomainName, type SearchType, getMarketplaceListingRef } from '@pseudolab/shared-types'
 import { Link } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef } from 'react'
 
@@ -59,6 +59,10 @@ function buildSearchHref(params: {
     searchParams.set('pageSize', String(params.pageSize ?? 20))
   }
   return `/search?${searchParams.toString()}`
+}
+
+function buildListingHref(datasetId: string, domain?: DomainName): string {
+  return getMarketplaceListingRef({ datasetId, domain })?.path ?? '/listings'
 }
 
 export function SearchPage() {
@@ -245,10 +249,9 @@ export function SearchPage() {
                   <p className="text-sm text-[var(--muted-foreground)]">결과 없음</p>
                 ) : (
                   (query.data?.data.groups.datasets.items ?? []).map((item) => (
-                    <Link
+                    <a
                       key={item.id}
-                      to="/datasets/$datasetId"
-                      params={{ datasetId: item.id }}
+                      href={buildListingHref(item.id, item.domain)}
                       className="block rounded border p-3 hover:border-[var(--primary)]"
                     >
                       <p className="font-medium">
@@ -257,7 +260,7 @@ export function SearchPage() {
                       <p className="text-sm text-[var(--muted-foreground)]">
                         <HighlightText text={item.description} keyword={current.q} />
                       </p>
-                    </Link>
+                    </a>
                   ))
                 )}
               </Card>
@@ -270,10 +273,9 @@ export function SearchPage() {
                   <p className="text-sm text-[var(--muted-foreground)]">결과 없음</p>
                 ) : (
                   (query.data?.data.groups.columns.items ?? []).map((item) => (
-                    <Link
+                    <a
                       key={`${item.dataset_id}:${item.column_name}`}
-                      to="/datasets/$datasetId"
-                      params={{ datasetId: item.dataset_id }}
+                      href={buildListingHref(item.dataset_id, item.domain)}
                       className="block rounded border p-3 hover:border-[var(--primary)]"
                     >
                       <p className="font-medium">
@@ -283,7 +285,7 @@ export function SearchPage() {
                       <p className="text-sm text-[var(--muted-foreground)]">
                         <HighlightText text={item.description ?? ''} keyword={current.q} />
                       </p>
-                    </Link>
+                    </a>
                   ))
                 )}
               </Card>
@@ -324,10 +326,9 @@ export function SearchPage() {
                 <p className="text-sm text-[var(--muted-foreground)]">결과 없음</p>
               ) : (
                 (query.data?.data.groups.datasets.items ?? []).map((item) => (
-                  <Link
+                  <a
                     key={item.id}
-                    to="/datasets/$datasetId"
-                    params={{ datasetId: item.id }}
+                    href={buildListingHref(item.id, item.domain)}
                     className="block rounded border p-3 hover:border-[var(--primary)]"
                   >
                     <p className="font-medium">
@@ -336,7 +337,7 @@ export function SearchPage() {
                     <p className="text-sm text-[var(--muted-foreground)]">
                       <HighlightText text={item.description} keyword={current.q} />
                     </p>
-                  </Link>
+                  </a>
                 ))
               )}
             </Card>
@@ -351,10 +352,9 @@ export function SearchPage() {
                 <p className="text-sm text-[var(--muted-foreground)]">결과 없음</p>
               ) : (
                 (query.data?.data.groups.columns.items ?? []).map((item) => (
-                  <Link
+                  <a
                     key={`${item.dataset_id}:${item.column_name}`}
-                    to="/datasets/$datasetId"
-                    params={{ datasetId: item.dataset_id }}
+                    href={buildListingHref(item.dataset_id, item.domain)}
                     className="block rounded border p-3 hover:border-[var(--primary)]"
                   >
                     <p className="font-medium">
@@ -364,7 +364,7 @@ export function SearchPage() {
                     <p className="text-sm text-[var(--muted-foreground)]">
                       <HighlightText text={item.description ?? ''} keyword={current.q} />
                     </p>
-                  </Link>
+                  </a>
                 ))
               )}
             </Card>

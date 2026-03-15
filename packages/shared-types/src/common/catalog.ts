@@ -1,8 +1,142 @@
 import type { IsoDateTime, JsonText } from './scalars'
 
-export type DomainName = 'github' | 'discord' | 'linkedin' | 'members'
+export const DOMAIN_NAMES = ['github', 'discord', 'linkedin', 'members'] as const
+export type DomainName = (typeof DOMAIN_NAMES)[number]
+
+export const MARKETPLACE_DOMAIN_LABELS: Record<DomainName, string> = {
+  github: 'GitHub',
+  discord: 'Discord',
+  linkedin: 'LinkedIn',
+  members: 'Members',
+}
+
+export const MARKETPLACE_DOMAIN_DESCRIPTIONS: Record<DomainName, string> = {
+  github: 'Repository, PR, issue, and release datasets curated for engineering workflows.',
+  discord: 'Community, moderation, and collector datasets curated for community operations.',
+  linkedin: 'Professional network datasets reserved for future marketplace expansion.',
+  members: 'Member relationship datasets reserved for future marketplace expansion.',
+}
+
+export function isDomainName(value: string): value is DomainName {
+  return DOMAIN_NAMES.includes(value as DomainName)
+}
+
+export function normalizeDomainName(value: string): DomainName | null {
+  const normalized = value.trim().toLowerCase()
+  return isDomainName(normalized) ? normalized : null
+}
+
+export function parseJsonTextArray(raw: JsonText | string | null | undefined): string[] {
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string')
+      : []
+  } catch {
+    return []
+  }
+}
+
+export function parseTagList(raw: string | null | undefined): string[] {
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) {
+      return parsed.filter((item): item is string => typeof item === 'string')
+    }
+  } catch {
+    // fall through to comma-separated parsing
+  }
+
+  return raw
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+export function getMarketplaceListingSlug(input: {
+  datasetId: string
+  domain: DomainName
+}): string {
+  const prefix = `${input.domain}.`
+  return input.datasetId.startsWith(prefix) ? input.datasetId.slice(prefix.length) : input.datasetId
+}
+
+export function getMarketplaceListingRouteParams(input: {
+  datasetId: string
+  domain: DomainName
+}): {
+  domain: DomainName
+  listingSlug: string
+} {
+  return {
+    domain: input.domain,
+    listingSlug: getMarketplaceListingSlug(input),
+  }
+}
+
+export type MarketplaceListingRef = {
+  domain: DomainName
+  slug: string
+  path: string
+}
+
+export function getMarketplaceListingPath(input: {
+  datasetId: string
+  domain: DomainName
+}): string {
+  const params = getMarketplaceListingRouteParams(input)
+  return `/listings/${params.domain}/${params.listingSlug}`
+}
+
+export function getMarketplaceListingRef(input: {
+  datasetId: string
+  domain?: DomainName
+}): MarketplaceListingRef | null {
+  if (!input.domain) {
+    return null
+  }
+
+  const slug = getMarketplaceListingSlug({
+    datasetId: input.datasetId,
+    domain: input.domain,
+  })
+
+  return {
+    domain: input.domain,
+    slug,
+    path: `/listings/${input.domain}/${slug}`,
+  }
+}
+
+export function getMarketplaceDomainPath(domain: DomainName): string {
+  return `/domains/${domain}`
+}
 
 // D1 catalog_datasets 테이블 Row
+export type CatalogDatasetRow = {
+  id: string
+  domain: DomainName
+  name: string
+  description: string
+  schema_json: JsonText | null // JSON-LD T-Box
+  lineage_json: JsonText | null
+  owner: string | null
+  tags: string | null // comma-separated 또는 JSON array
+  purpose: string | null
+  limitations: JsonText | null
+  usage_examples: JsonText | null
+  created_at: IsoDateTime
+  updated_at: IsoDateTime
+}
+
 export type CatalogDataset = {
   id: string
   domain: DomainName
@@ -12,6 +146,9 @@ export type CatalogDataset = {
   lineage_json: JsonText | null
   owner: string | null
   tags: string | null // comma-separated 또는 JSON array
+  purpose: string | null
+  limitations: string[]
+  usage_examples: string[]
   created_at: IsoDateTime
   updated_at: IsoDateTime
 }
@@ -133,4 +270,91 @@ export type IntegratedSearchResult = {
     columns: SearchGroup<ColumnSearchHit>
     glossary: SearchGroup<GlossarySearchHit>
   }
+}
+
+export type ListingResourceType = 'sql' | 'api' | 'notebook' | 'documentation'
+
+export type ListingOwner = {
+  id: string
+  slug: string
+  display_name: string
+  team_name: string | null
+  role_title: string | null
+  bio: string | null
+  avatar_url: string | null
+  contact_email: string | null
+  slack_channel: string | null
+}
+
+export type MarketplaceListingDataset = {
+  id: string
+  domain: DomainName
+  slug: string
+  name: string
+  description: string
+  owner: string | null
+  tags: string[]
+  purpose: string | null
+  limitations: string[]
+  usage_examples: string[]
+  preview_available: boolean
+  has_pii: boolean
+  updated_at: IsoDateTime
+}
+
+export type ListingBusinessNeed = {
+  id: string
+  title: string
+  summary: string
+  display_order: number
+}
+
+export type ListingResource = {
+  id: string
+  type: ListingResourceType
+  title: string
+  summary: string | null
+  url: string | null
+  content: string | null
+  display_order: number
+  related_dataset_ids: string[]
+}
+
+export type MarketplaceListingSummary = {
+  id: string
+  dataset_id: string
+  domain: DomainName
+  slug: string
+  title: string
+  subtitle: string | null
+  description: string
+  category: string
+  update_frequency: string | null
+  coverage_summary: string | null
+  documentation_url: string | null
+  last_verified_at: IsoDateTime | null
+  owner: ListingOwner
+  business_need_tags: string[]
+  preview_available: boolean
+  has_pii: boolean
+}
+
+export type MarketplaceListingDetail = MarketplaceListingSummary & {
+  dataset: MarketplaceListingDataset
+  business_needs: ListingBusinessNeed[]
+  resources: ListingResource[]
+  related_listings: MarketplaceListingSummary[]
+}
+
+export type MarketplaceDomainSummary = {
+  key: DomainName
+  label: string
+  description: string
+  listing_count: number
+  featured_listing_slug: string | null
+  featured_listing_title: string | null
+}
+
+export type MarketplaceDomainDetail = MarketplaceDomainSummary & {
+  listings: MarketplaceListingSummary[]
 }

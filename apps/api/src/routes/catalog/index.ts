@@ -3,6 +3,7 @@ import type {
   ApiSuccess,
   CatalogColumn,
   CatalogDataset,
+  CatalogDatasetRow,
   DatasetPreviewResponse,
   Env,
   GlossaryTerm,
@@ -13,6 +14,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { AppError, notFound, validationError } from '../../lib/errors'
 import { requireInternalBearer } from '../../middleware/internal-auth'
+import { PREVIEW_SOURCE_BY_DATASET_ID } from './preview-sources'
 
 const catalogRouter = new Hono<{ Bindings: Env }>()
 
@@ -80,33 +82,6 @@ const PreviewQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).optional(),
 })
 
-const PREVIEW_SOURCE_BY_DATASET_ID: Record<string, { table: string; sortCol: string }> = {
-  'github.push-events.v1': { table: 'dl_push_events', sortCol: 'ts_kst' },
-  'github.pull-request-events.v1': { table: 'dl_pull_request_events', sortCol: 'ts_kst' },
-  'github.issues-events.v1': { table: 'dl_issues_events', sortCol: 'ts_kst' },
-  'github.issue-comment-events.v1': { table: 'dl_issue_comment_events', sortCol: 'ts_kst' },
-  'github.watch-events.v1': { table: 'dl_watch_events', sortCol: 'ts_kst' },
-  'github.fork-events.v1': { table: 'dl_fork_events', sortCol: 'ts_kst' },
-  'github.create-events.v1': { table: 'dl_create_events', sortCol: 'ts_kst' },
-  'github.delete-events.v1': { table: 'dl_delete_events', sortCol: 'ts_kst' },
-  'github.pull-request-review-events.v1': {
-    table: 'dl_pull_request_review_events',
-    sortCol: 'ts_kst',
-  },
-  'github.pull-request-review-comment-events.v1': {
-    table: 'dl_pull_request_review_comment_events',
-    sortCol: 'ts_kst',
-  },
-  'github.member-events.v1': { table: 'dl_member_events', sortCol: 'ts_kst' },
-  'github.gollum-events.v1': { table: 'dl_gollum_events', sortCol: 'ts_kst' },
-  'github.release-events.v1': { table: 'dl_release_events', sortCol: 'ts_kst' },
-  'github.public-events.v1': { table: 'dl_public_events', sortCol: 'ts_kst' },
-  'discord.messages.v1': {
-    table: 'discord_messages',
-    sortCol: 'created_at',
-  },
-}
-
 const PREVIEW_CACHE_TTL_SECONDS = 86_400
 
 const DATASET_ID_REGEX = /^[\w.-]+$/
@@ -152,29 +127,36 @@ const DatasetSnapshotParamSchema = z.object({
   id: z.string().min(1).max(255).regex(DATASET_ID_REGEX, 'id has invalid format'),
 })
 
-const DatasetSnapshotBodySchema = z.object({
-  dataset: z.object({
-    id: z.string().min(1).max(255).regex(DATASET_ID_REGEX, 'dataset.id has invalid format'),
-    domain: DomainEnum,
-    name: z.string().trim().min(1).max(255),
-    description: z.string().trim().min(1),
-    schema_json: z.unknown().nullable().optional(),
-    owner: z.string().trim().min(1).max(255).nullable().optional(),
-    tags: z.union([z.string(), z.array(z.string()), z.null()]).optional(),
-  }),
-  columns: z
-    .array(
-      z.object({
-        column_name: z.string().trim().min(1).max(255),
-        data_type: z.string().trim().min(1).max(120),
-        description: z.string().trim().min(1).nullable().optional(),
-        is_pii: z.boolean().default(false),
-        examples: z.unknown().nullable().optional(),
-      }),
-    )
-    .max(5000),
-  lineage: LineageGraphSchema.optional(),
-})
+const DatasetSnapshotBodySchema = z
+  .object({
+    dataset: z
+      .object({
+        id: z.string().min(1).max(255).regex(DATASET_ID_REGEX, 'dataset.id has invalid format'),
+        domain: DomainEnum,
+        name: z.string().trim().min(1).max(255),
+        description: z.string().trim().min(1),
+        schema_json: z.unknown().nullable().optional(),
+        owner: z.string().trim().min(1).max(255).nullable().optional(),
+        tags: z.union([z.string(), z.array(z.string()), z.null()]).optional(),
+        purpose: z.string().trim().min(1).nullable().optional(),
+        limitations: z.array(z.string().trim().min(1)).max(50).nullable().optional(),
+        usage_examples: z.array(z.string().trim().min(1)).max(50).nullable().optional(),
+      })
+      .strict(),
+    columns: z
+      .array(
+        z.object({
+          column_name: z.string().trim().min(1).max(255),
+          data_type: z.string().trim().min(1).max(120),
+          description: z.string().trim().min(1).nullable().optional(),
+          is_pii: z.boolean().default(false),
+          examples: z.unknown().nullable().optional(),
+        }),
+      )
+      .max(5000),
+    lineage: LineageGraphSchema.optional(),
+  })
+  .strict()
 
 const validate = (schema: z.ZodTypeAny, target: 'query' | 'param') =>
   zValidator(target, schema, (result) => {
@@ -232,6 +214,74 @@ function parseRelatedTerms(raw: unknown): string[] {
     return parsed.filter((value): value is string => typeof value === 'string')
   } catch {
     return []
+  }
+}
+
+function parseJsonStringArray(raw: unknown): string[] {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+
+    return parsed.filter((value): value is string => typeof value === 'string')
+  } catch {
+    return []
+  }
+}
+
+function normalizeOptionalString(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) {
+    return null
+  }
+
+  return value
+}
+
+function normalizeOptionalStringArray(value: string[] | null | undefined): string[] | null {
+  if (value === undefined || value === null) {
+    return null
+  }
+
+  return value
+}
+
+function stringArrayToJsonText(
+  value: string[] | null | undefined,
+  fieldName: string,
+): string | null {
+  if (value === undefined || value === null) {
+    return null
+  }
+
+  try {
+    return JSON.stringify(value)
+  } catch {
+    throw validationError(`${fieldName} must be a JSON-serializable value`)
+  }
+}
+
+function mapCatalogDatasetRowToResponse(
+  row: CatalogDatasetRow | Record<string, unknown>,
+): CatalogDataset {
+  return {
+    id: String(row.id),
+    domain: row.domain as CatalogDataset['domain'],
+    name: String(row.name),
+    description: String(row.description),
+    schema_json: typeof row.schema_json === 'string' ? row.schema_json : null,
+    lineage_json: typeof row.lineage_json === 'string' ? row.lineage_json : null,
+    owner: typeof row.owner === 'string' ? row.owner : null,
+    tags: typeof row.tags === 'string' ? row.tags : null,
+    purpose: typeof row.purpose === 'string' ? row.purpose : null,
+    limitations: parseJsonStringArray(row.limitations),
+    usage_examples: parseJsonStringArray(row.usage_examples),
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
   }
 }
 
@@ -581,7 +631,7 @@ catalogRouter.get('/datasets', validate(DatasetQuerySchema, 'query'), async (c) 
   const totalPages = Math.ceil(total / pageSize)
 
   const rows = await c.env.DB.prepare(
-    `SELECT id, domain, name, description, schema_json, lineage_json, owner, tags, created_at, updated_at
+    `SELECT id, domain, name, description, schema_json, lineage_json, owner, tags, purpose, limitations, usage_examples, created_at, updated_at
        FROM catalog_datasets ${whereClause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
   )
     .bind(...bindings, pageSize, offset)
@@ -589,7 +639,7 @@ catalogRouter.get('/datasets', validate(DatasetQuerySchema, 'query'), async (c) 
 
   const response: PaginatedResponse<CatalogDataset> = {
     success: true,
-    data: rows.results as CatalogDataset[],
+    data: rows.results.map((row) => mapCatalogDatasetRowToResponse(row as Record<string, unknown>)),
     pagination: {
       page,
       pageSize,
@@ -605,7 +655,7 @@ catalogRouter.get('/datasets/:id', validate(IdParamSchema, 'param'), async (c) =
   const { id } = c.req.valid('param')
 
   const dataset = await c.env.DB.prepare(
-    'SELECT id, domain, name, description, schema_json, lineage_json, owner, tags, created_at, updated_at FROM catalog_datasets WHERE id = ?',
+    'SELECT id, domain, name, description, schema_json, lineage_json, owner, tags, purpose, limitations, usage_examples, created_at, updated_at FROM catalog_datasets WHERE id = ?',
   )
     .bind(id)
     .first()
@@ -616,7 +666,7 @@ catalogRouter.get('/datasets/:id', validate(IdParamSchema, 'param'), async (c) =
 
   const response: ApiSuccess<CatalogDataset> = {
     success: true,
-    data: dataset as CatalogDataset,
+    data: mapCatalogDatasetRowToResponse(dataset as Record<string, unknown>),
   }
 
   return c.json(response)
@@ -849,11 +899,18 @@ catalogRouter.put(
     )
 
     const now = nowIso()
+    const hasPurpose = Object.prototype.hasOwnProperty.call(body.dataset, 'purpose')
+    const hasLimitations = Object.prototype.hasOwnProperty.call(body.dataset, 'limitations')
+    const hasUsageExamples = Object.prototype.hasOwnProperty.call(body.dataset, 'usage_examples')
+    const normalizedPurpose = normalizeOptionalString(body.dataset.purpose)
+    const normalizedLimitations = normalizeOptionalStringArray(body.dataset.limitations)
+    const normalizedUsageExamples = normalizeOptionalStringArray(body.dataset.usage_examples)
+
     await c.env.DB.prepare(
       `INSERT INTO catalog_datasets (
-        id, domain, name, description, schema_json, lineage_json, owner, tags, created_at, updated_at
+        id, domain, name, description, schema_json, lineage_json, owner, tags, purpose, limitations, usage_examples, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         domain = excluded.domain,
         name = excluded.name,
@@ -862,6 +919,12 @@ catalogRouter.put(
         lineage_json = COALESCE(excluded.lineage_json, catalog_datasets.lineage_json),
         owner = excluded.owner,
         tags = excluded.tags,
+        purpose = CASE WHEN ? THEN excluded.purpose ELSE catalog_datasets.purpose END,
+        limitations = CASE WHEN ? THEN excluded.limitations ELSE catalog_datasets.limitations END,
+        usage_examples = CASE
+          WHEN ? THEN excluded.usage_examples
+          ELSE catalog_datasets.usage_examples
+        END,
         updated_at = excluded.updated_at`,
     )
       .bind(
@@ -873,8 +936,14 @@ catalogRouter.put(
         body.lineage ? JSON.stringify(body.lineage) : null,
         body.dataset.owner ?? null,
         normalizeTags(body.dataset.tags),
+        normalizedPurpose,
+        stringArrayToJsonText(normalizedLimitations, 'dataset.limitations'),
+        stringArrayToJsonText(normalizedUsageExamples, 'dataset.usage_examples'),
         now,
         now,
+        hasPurpose ? 1 : 0,
+        hasLimitations ? 1 : 0,
+        hasUsageExamples ? 1 : 0,
       )
       .run()
 

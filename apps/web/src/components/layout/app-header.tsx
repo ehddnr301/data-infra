@@ -3,7 +3,7 @@ import { Input } from '@/components/ui/input'
 import { NavigationMenu } from '@/components/ui/navigation-menu'
 import { useRecentSearches } from '@/hooks/use-recent-searches'
 import { Link } from '@tanstack/react-router'
-import { Database, Info, LayoutDashboard, Menu, Search } from 'lucide-react'
+import { Github, Info, LayoutDashboard, Menu, MessageSquare, Search, Store } from 'lucide-react'
 import { useState } from 'react'
 
 type AppHeaderProps = {
@@ -22,23 +22,39 @@ export function AppHeader({ onOpenSidebar }: AppHeaderProps) {
           <Button className="md:hidden" variant="ghost" size="sm" onClick={onOpenSidebar}>
             <Menu className="h-4 w-4" />
           </Button>
-          <p className="font-semibold tracking-tight">PseudoLab Data Catalog</p>
+          <p className="font-semibold tracking-tight">PseudoLab Data Marketplace</p>
         </div>
         <NavigationMenu className="hidden md:flex">
           <Link to="/" className="inline-flex items-center gap-1 px-2 py-1 text-sm">
             <LayoutDashboard className="h-4 w-4" />
             대시보드
           </Link>
-          <Link to="/datasets" className="inline-flex items-center gap-1 px-2 py-1 text-sm">
-            <Database className="h-4 w-4" />
-            데이터셋
+          <Link to="/listings" className="inline-flex items-center gap-1 px-2 py-1 text-sm">
+            <Store className="h-4 w-4" />
+            리스팅
+          </Link>
+          <Link
+            to="/domains/$domainKey"
+            params={{ domainKey: 'github' }}
+            className="inline-flex items-center gap-1 px-2 py-1 text-sm"
+          >
+            <Github className="h-4 w-4" />
+            GitHub hub
+          </Link>
+          <Link
+            to="/domains/$domainKey"
+            params={{ domainKey: 'discord' }}
+            className="inline-flex items-center gap-1 px-2 py-1 text-sm"
+          >
+            <MessageSquare className="h-4 w-4" />
+            Discord hub
           </Link>
           <Link to="/about" className="inline-flex items-center gap-1 px-2 py-1 text-sm">
             <Info className="h-4 w-4" />
             소개
           </Link>
         </NavigationMenu>
-        <div className="relative hidden min-w-64 flex-1 max-w-sm md:block">
+        <div className="relative hidden min-w-64 max-w-sm flex-1 md:block">
           <form
             action="/search"
             method="get"

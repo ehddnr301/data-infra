@@ -105,3 +105,37 @@ backfill-profiles-safe paused: processed=1 inserted=1 remaining=982
 backfill-profiles-safe paused: processed=1 inserted=1 remaining=981
 backfill-profiles-safe paused: processed=1 inserted=1 remaining=980
 backfill-profiles-safe paused: processed=1 inserted=1 remaining=979
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=978
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=977
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=976
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=975
+{"timestamp": "2026-03-15T09:53:32Z", "level": "WARNING", "message": "Safe backfill terminal marker: user_id=1373749889636237322 status=404"}
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=974
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=973
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=972
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=971
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=970
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=969
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=968
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=967
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=966
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=965
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=964
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=963
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=962
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=961
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=960
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=959
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=958
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=957
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=956
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=955
+backfill-profiles-safe paused: processed=1 inserted=1 remaining=954
+[FAIL] non-terminal fetch error: user_id=456226577798135808 status=409
+worker transient failure: code=1, sleeping=1800s
+[FAIL] non-terminal fetch error: user_id=456226577798135808 status=409
+worker transient failure: code=1, sleeping=1800s
+[FAIL] non-terminal fetch error: user_id=456226577798135808 status=409
+worker transient failure: code=1, sleeping=1800s
+[FAIL] non-terminal fetch error: user_id=456226577798135808 status=409
+worker transient failure: code=1, sleeping=1800s
