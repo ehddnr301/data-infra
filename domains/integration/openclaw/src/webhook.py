@@ -186,10 +186,14 @@ def _plan_blocks(
     plan_id: str, dataset_id: str, payload: dict[str, Any], expires_at: float
 ) -> list[dict[str, Any]]:
     ttl_minutes = max(1, int((expires_at - time.time()) // 60))
-    usage = payload.get("usage_examples") or []
-    purpose = payload.get("purpose") or ""
-    description = payload.get("dataset", {}).get("description") or ""
+    dataset_meta_raw = payload.get("dataset", {})
+    dataset_meta = dataset_meta_raw if isinstance(dataset_meta_raw, dict) else {}
+    usage = dataset_meta.get("usage_examples") or []
+    purpose = dataset_meta.get("purpose") or ""
+    limitations = dataset_meta.get("limitations") or []
+    description = dataset_meta.get("description") or ""
     usage_preview = usage[0] if usage else "(none)"
+    limitations_preview = limitations[0] if limitations else "(none)"
     columns = payload.get("columns") or []
     described_columns = [
         col
@@ -218,6 +222,7 @@ def _plan_blocks(
                     f"description: {description}\n"
                     f"usage_example: {usage_preview}\n"
                     f"purpose: {purpose}\n"
+                    f"limitation: {limitations_preview}\n"
                     f"columns_with_description: {len(described_columns)}"
                 ),
             },

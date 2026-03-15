@@ -1,0 +1,24 @@
+fetch("https://discord.com/api/v9/users/750551828961427546/profile?type=popout&with_mutual_guilds=true&with_mutual_friends=true&with_mutual_friends_count=false&guild_id=944032730050621450", {
+  "headers": {
+    "accept": "*/*",
+    "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "authorization": "<REDACTED_USE_DISCORD_USER_TOKEN_ENV>",
+    "priority": "u=1, i",
+    "sec-ch-ua": "\"Not(A:Brand\";v=\"8\", \"Chromium\";v=\"144\", \"Google Chrome\";v=\"144\"",
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": "\"macOS\"",
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+    "x-debug-options": "bugReporterEnabled",
+    "x-discord-locale": "ko",
+    "x-discord-timezone": "Asia/Seoul",
+    "x-installation-id": "1470373655912517663.elJJ1l8doHG0WQiLy5zpIEv9pNU",
+    "x-super-properties": "eyJvcyI6Ik1hYyBPUyBYIiwiYnJvd3NlciI6IkNocm9tZSIsImRldmljZSI6IiIsInN5c3RlbV9sb2NhbGUiOiJrby1LUiIsImJyb3dzZXJfdXNlcl9hZ2VudCI6Ik1vemlsbGEvNS4wIChNYWNpbnRvc2g7IEludGVsIE1hYyBPUyBYIDEwXzE1XzcpIEFwcGxlV2ViS2l0LzUzNy4zNiAoS0hUTUwsIGxpa2UgR2Vja28pIENocm9tZS8xNDQuMC4wLjAgU2FmYXJpLzUzNy4zNiIsImJyb3dzZXJfdmVyc2lvbiI6IjE0NC4wLjAuMCIsIm9zX3ZlcnNpb24iOiIxMC4xNS43IiwicmVmZXJyZXIiOiIiLCJyZWZlcnJpbmdfZG9tYWluIjoiIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjUxMDczMywiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbCwiaGFzX2NsaWVudF9tb2RzIjpmYWxzZSwiY2xpZW50X2xhdW5jaF9pZCI6ImE4MWRjNWQxLTdjYTAtNGUzYy1hODM5LWVjNGVlNmM2ZDRlZiIsImxhdW5jaF9zaWduYXR1cmUiOiI0YTQ2NGVlYS1iNGMyLTQ1ZmItODI3MC02MjIzMjZiZjYyYjciLCJjbGllbnRfaGVhcnRiZWF0X3Nlc3Npb25faWQiOiI5Y2E5N2IyOC0wNTBlLTQ1MWMtOThjMi1mNzQ2ZWJiMDJkN2EiLCJjbGllbnRfYXBwX3N0YXRlIjoiZm9jdXNlZCJ9"
+  },
+  "referrer": "https://discord.com/channels/944032730050621450/1472577241371246613",
+  "body": null,
+  "method": "GET",
+  "mode": "cors",
+  "credentials": "include"
+});

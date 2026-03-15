@@ -59,9 +59,12 @@ def test_plan_error_message_generic() -> None:
 
 def test_plan_blocks_include_column_preview() -> None:
     payload = {
-        "dataset": {"description": "dataset desc"},
-        "usage_examples": ["weekly report"],
-        "purpose": "quality",
+        "dataset": {
+            "description": "dataset desc",
+            "usage_examples": ["weekly report"],
+            "purpose": "quality",
+            "limitations": ["stale by one day"],
+        },
         "columns": [
             {"column_name": "repo_name", "description": "repository name"},
             {"column_name": "event_type", "description": "event category"},
@@ -75,15 +78,20 @@ def test_plan_blocks_include_column_preview() -> None:
     ]
     joined = "\n".join(section_texts)
     assert "Column Description Preview" in joined
+    assert "purpose: quality" in joined
+    assert "limitation: stale by one day" in joined
     assert "`repo_name`: repository name" in joined
     assert "`event_type`: event category" in joined
 
 
 def test_plan_blocks_preview_truncates_over_limit() -> None:
     payload = {
-        "dataset": {"description": "dataset desc"},
-        "usage_examples": ["weekly report"],
-        "purpose": "quality",
+        "dataset": {
+            "description": "dataset desc",
+            "usage_examples": ["weekly report"],
+            "purpose": "quality",
+            "limitations": ["stale by one day"],
+        },
         "columns": [
             {"column_name": f"col_{idx}", "description": f"desc_{idx}"} for idx in range(9)
         ],

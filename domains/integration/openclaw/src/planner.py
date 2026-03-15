@@ -17,6 +17,7 @@ JSON 형식:
 {
   "table_description": "...",
   "column_descriptions": {"col_name": "..."},
+  "limitations": ["..."],
   "usage_examples": ["..."],
   "purpose": "..."
 }
@@ -26,6 +27,7 @@ JSON 형식:
 class PlanDraft(BaseModel):
     table_description: str = Field(min_length=1)
     column_descriptions: dict[str, str] = Field(default_factory=dict)
+    limitations: list[str] = Field(default_factory=list)
     usage_examples: list[str] = Field(default_factory=list)
     purpose: str = Field(min_length=1)
 
@@ -78,10 +80,11 @@ class Planner:
                 "schema_json": dataset.get("schema_json"),
                 "owner": dataset.get("owner"),
                 "tags": dataset.get("tags"),
+                "purpose": draft.purpose,
+                "limitations": draft.limitations,
+                "usage_examples": draft.usage_examples,
             },
             "columns": updated_columns,
-            "usage_examples": draft.usage_examples,
-            "purpose": draft.purpose,
             "seed_text": seed_text,
         }
         normalized_lineage = self._normalize_lineage(dataset.get("lineage_json"))
@@ -229,6 +232,9 @@ class Planner:
                 "description": dataset.get("description"),
                 "owner": dataset.get("owner"),
                 "tags": dataset.get("tags"),
+                "purpose": dataset.get("purpose"),
+                "limitations": dataset.get("limitations"),
+                "usage_examples": dataset.get("usage_examples"),
             },
             "columns": compact_columns,
             "summary": {

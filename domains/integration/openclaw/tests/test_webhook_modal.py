@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -7,10 +8,11 @@ import os
 import time
 from urllib.parse import urlencode
 
+import httpx
 import pytest
 import webhook as webhook_module
-from app import app
-from fastapi.testclient import TestClient
+from app import Runtime, app
+from config import load_settings
 from webhook import (
     DATASET_ACTION_ID,
     DATASET_BLOCK_ID,
@@ -29,6 +31,17 @@ def _set_required_env() -> None:
     os.environ["ANTHROPIC_API_KEY"] = "test"
     os.environ["CATALOG_API_BASE_URL"] = "http://127.0.0.1:8787"
     os.environ["CATALOG_INTERNAL_BEARER"] = "token"
+
+
+async def _post_interactive(body: bytes, headers: dict[str, str]) -> httpx.Response:
+    runtime = Runtime(load_settings())
+    app.state.runtime = runtime
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post("/slack/interactive", content=body, headers=headers)
+    finally:
+        await runtime.close()
 
 
 def _signed_headers(body: bytes, *, signing_secret: str) -> dict[str, str]:
@@ -122,9 +135,7 @@ def test_interactive_view_submission_schedules_targeted_plan(
     body = urlencode({"payload": json.dumps(payload, ensure_ascii=False)}).encode("utf-8")
     headers = _signed_headers(body, signing_secret="secret")
 
-    with TestClient(app) as client:
-        response = client.post("/slack/interactive", content=body, headers=headers)
-
+    response = asyncio.run(_post_interactive(body, headers))
     assert response.status_code == 200
     assert response.json()["response_action"] == "clear"
     assert captured["selected_dataset_id"] == "github.watch-events.v1"
@@ -158,9 +169,7 @@ def test_interactive_block_suggestion_returns_options(monkeypatch: pytest.Monkey
     body = urlencode({"payload": json.dumps(payload, ensure_ascii=False)}).encode("utf-8")
     headers = _signed_headers(body, signing_secret="secret")
 
-    with TestClient(app) as client:
-        response = client.post("/slack/interactive", content=body, headers=headers)
-
+    response = asyncio.run(_post_interactive(body, headers))
     assert response.status_code == 200
     assert response.json()["options"][0]["value"] == "github.watch-events.v1"
     assert captured_query["value"] == "watch"

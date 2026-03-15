@@ -64,6 +64,7 @@ def test_generate_plan_maps_descriptions(monkeypatch: pytest.MonkeyPatch) -> Non
                 return PlanDraft(
                     table_description="new table description",
                     column_descriptions={"repo_name": "repository name"},
+                    limitations=["sampled repository scope"],
                     usage_examples=["monthly trend"],
                     purpose="track activity",
                 )
@@ -78,7 +79,11 @@ def test_generate_plan_maps_descriptions(monkeypatch: pytest.MonkeyPatch) -> Non
     assert dataset_id == "github.push-events.v1"
     assert payload["dataset"]["description"] == "new table description"
     assert payload["columns"][0]["description"] == "repository name"
-    assert payload["purpose"] == "track activity"
+    assert payload["dataset"]["purpose"] == "track activity"
+    assert payload["dataset"]["limitations"] == ["sampled repository scope"]
+    assert payload["dataset"]["usage_examples"] == ["monthly trend"]
+    assert "purpose" not in payload
+    assert "usage_examples" not in payload
     assert payload["lineage"]["version"] == 1
 
 
@@ -157,6 +162,7 @@ def test_generate_plan_omits_invalid_lineage_string(monkeypatch: pytest.MonkeyPa
                 return PlanDraft(
                     table_description="new table description",
                     column_descriptions={},
+                    limitations=["sampled repository scope"],
                     usage_examples=["monthly trend"],
                     purpose="track activity",
                 )
@@ -190,6 +196,7 @@ def test_generate_draft_retries_with_compact_snapshot(
                 return PlanDraft(
                     table_description="fallback description",
                     column_descriptions={},
+                    limitations=["fallback limitation"],
                     usage_examples=["example"],
                     purpose="fallback purpose",
                 )
@@ -204,5 +211,6 @@ def test_generate_draft_retries_with_compact_snapshot(
 
     draft, calls = asyncio.run(run())
     assert draft.table_description == "fallback description"
+    assert draft.limitations == ["fallback limitation"]
     assert calls[0] == (80, 1024)
     assert calls[1] == (30, 512)
