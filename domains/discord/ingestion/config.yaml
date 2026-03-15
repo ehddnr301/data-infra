@@ -41,3 +41,18 @@ channels:
 # D1 설정 (HTTP API)
 d1:
   database_id: ""        # 환경변수 D1_DATABASE_ID로 오버라이드
+
+profile_enrichment:
+  enabled: false
+  guild_id: ""
+  type: "popout"
+  with_mutual_guilds: true
+  with_mutual_friends: true
+  with_mutual_friends_count: false
+  max_users_per_run: 1000
+  request_timeout_sec: 30
+  max_retries: 3
+  per_user_delay_sec: 5.0
+  cooldown_on_429_sec: 300
+  max_consecutive_429: 20
+  request_template_path: ""

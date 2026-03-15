@@ -4,7 +4,7 @@
 
 Task 흐름:
   fetch → validate → [upload_r2, upload_d1]
-  upload_d1 → quality_check → summary → cleanup
+  upload_d1 → quality_check → check_profile_targets → enrich_profiles → summary → cleanup
   upload_r2 → cleanup
 
   TODO: on_failure_callback 괜찮은지 점검
@@ -57,12 +57,12 @@ DEFAULT_ARGS = {
     default_args=DEFAULT_ARGS,
 )
 def discord_daily():
-
     # ── Task 1: fetch (Discord API → JSONL) ──
     fetch = BashOperator(
         task_id="fetch",
         bash_command=(
             "discord-etl fetch "
+            "--batch-date {{ data_interval_start | ds }} "
             f"--output-dir {DATA_DIR} "
             f"--config {CONFIG_PATH} "
             "--json-log"
@@ -135,6 +135,31 @@ def discord_daily():
         ),
     )
 
+    @task.short_circuit(ignore_downstream_trigger_rules=False)
+    def check_profile_targets() -> bool:
+        from discord_etl.config import load_config
+        from discord_etl.d1 import get_missing_profile_count
+
+        config = load_config(CONFIG_PATH)
+        if not config.profile_enrichment.enabled:
+            print("[check_profile_targets] profile_enrichment disabled")
+            return False
+
+        count = get_missing_profile_count(config.d1)
+        if count == 0:
+            print("[check_profile_targets] 대상 없음 — enrich 스킵")
+            return False
+
+        print(f"[check_profile_targets] {count}명 대상")
+        return True
+
+    check_profile_targets_task = check_profile_targets()
+
+    enrich_profiles = BashOperator(
+        task_id="enrich_profiles",
+        bash_command=(f"discord-etl enrich-profiles --config {CONFIG_PATH} --json-log"),
+    )
+
     # ── Task 6: summary (Slack 알림) ──
     @task(trigger_rule="none_failed_min_one_success")
     def summary(**context) -> None:
@@ -159,10 +184,7 @@ def discord_daily():
         alert = AlertMessage(
             level="INFO",
             title="Discord 일일 수집 완료",
-            text=(
-                f"날짜: {ds}\n"
-                f"수집 메시지: {total_messages}건"
-            ),
+            text=(f"날짜: {ds}\n수집 메시지: {total_messages}건"),
         )
         send_slack_webhook(alert, webhook_url)
         print(f"[summary] {ds}: Slack 전송 완료 ({total_messages} messages)")
@@ -186,10 +208,11 @@ def discord_daily():
 
     # ── 의존성 그래프 ──
     # fetch → validate → [upload_r2, upload_d1]
-    # upload_d1 → quality_check → summary → cleanup
+    # upload_d1 → quality_check → check_profile_targets → enrich_profiles → summary → cleanup
     # upload_r2 → cleanup
     fetch >> validate_result >> [upload_r2, upload_d1]
-    upload_d1 >> quality_check >> summary_task >> cleanup_task
+    upload_d1 >> quality_check
+    (quality_check >> check_profile_targets_task >> enrich_profiles >> summary_task >> cleanup_task)
     upload_r2 >> cleanup_task
 
 

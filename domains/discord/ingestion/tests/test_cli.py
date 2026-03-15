@@ -44,8 +44,11 @@ class TestFetchCommand:
             d1=D1Config(),
         )
         mock_collect.return_value = CollectStats(
-            channel_name="test", channel_id="123",
-            messages_fetched=10, messages_new=5, messages_stored=5,
+            channel_name="test",
+            channel_id="123",
+            messages_fetched=10,
+            messages_new=5,
+            messages_stored=5,
         )
 
         result = runner.invoke(main, ["fetch", "--config", str(tmp_config_file)])
@@ -75,11 +78,13 @@ class TestFetchCommand:
             d1=D1Config(),
         )
         mock_collect.return_value = CollectStats(
-            channel_name="ch2", channel_id="222",
+            channel_name="ch2",
+            channel_id="222",
         )
 
         result = runner.invoke(
-            main, ["fetch", "--config", str(tmp_config_file), "--channel-id", "222"],
+            main,
+            ["fetch", "--config", str(tmp_config_file), "--channel-id", "222"],
         )
 
         assert result.exit_code == 0
@@ -107,7 +112,8 @@ class TestFetchCommand:
         )
 
         result = runner.invoke(
-            main, ["fetch", "--config", str(tmp_config_file), "--channel-id", "999"],
+            main,
+            ["fetch", "--config", str(tmp_config_file), "--channel-id", "999"],
         )
 
         assert result.exit_code != 0
@@ -131,7 +137,8 @@ class TestFetchCommand:
             d1=D1Config(),
         )
         mock_collect.return_value = CollectStats(
-            channel_name="test", channel_id="123",
+            channel_name="test",
+            channel_id="123",
             error="API error",
         )
 
@@ -158,11 +165,13 @@ class TestFetchCommand:
             d1=D1Config(),
         )
         mock_collect.return_value = CollectStats(
-            channel_name="test", channel_id="123",
+            channel_name="test",
+            channel_id="123",
         )
 
         result = runner.invoke(
-            main, ["fetch", "--config", str(tmp_config_file), "--dry-run"],
+            main,
+            ["fetch", "--config", str(tmp_config_file), "--dry-run"],
         )
 
         assert result.exit_code == 0
@@ -190,17 +199,51 @@ class TestFetchCommand:
             d1=D1Config(),
         )
         mock_collect.return_value = CollectStats(
-            channel_name="test", channel_id="123",
+            channel_name="test",
+            channel_id="123",
         )
 
         out_dir = tmp_path / "output"
         result = runner.invoke(
-            main, ["fetch", "--config", str(tmp_config_file), "--output-dir", str(out_dir)],
+            main,
+            ["fetch", "--config", str(tmp_config_file), "--output-dir", str(out_dir)],
         )
 
         assert result.exit_code == 0
         call_kwargs = mock_collect.call_args[1]
         assert call_kwargs["output_dir"] == out_dir
+
+    @patch("discord_etl.cli.collect_channel")
+    @patch("discord_etl.cli.DiscordClient")
+    @patch("discord_etl.cli.load_config")
+    def test_fetch_with_batch_date(
+        self,
+        mock_load_config: MagicMock,
+        mock_client_cls: MagicMock,
+        mock_collect: MagicMock,
+        runner: CliRunner,
+        tmp_config_file: Path,
+    ) -> None:
+        from discord_etl.config import AppConfig, ChannelConfig, D1Config, DiscordApiConfig
+
+        mock_load_config.return_value = AppConfig(
+            discord=DiscordApiConfig(),
+            channels=[ChannelConfig(name="test", id="123")],
+            d1=D1Config(),
+        )
+        mock_collect.return_value = CollectStats(
+            channel_name="test",
+            channel_id="123",
+        )
+
+        result = runner.invoke(
+            main,
+            ["fetch", "--config", str(tmp_config_file), "--batch-date", "2024-06-15"],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_collect.call_args[1]
+        assert call_kwargs["batch_date"] == "2024-06-15"
 
 
 def _make_jsonl_fixture(tmp_path: Path, channel_name: str, date: str) -> Path:
@@ -253,17 +296,27 @@ class TestUploadCommand:
             d1=D1Config(),
         )
         mock_insert.return_value = D1InsertResult(
-            total_rows=1, rows_inserted=1, batches_executed=1,
+            total_rows=1,
+            rows_inserted=1,
+            batches_executed=1,
         )
 
         _make_jsonl_fixture(tmp_path, "test-channel", "2024-06-15")
 
-        result = runner.invoke(main, [
-            "upload", "--date", "2024-06-15",
-            "--input-dir", str(tmp_path),
-            "--target", "all",
-            "--config", str(tmp_config_file),
-        ])
+        result = runner.invoke(
+            main,
+            [
+                "upload",
+                "--date",
+                "2024-06-15",
+                "--input-dir",
+                str(tmp_path),
+                "--target",
+                "all",
+                "--config",
+                str(tmp_config_file),
+            ],
+        )
 
         assert result.exit_code == 0
         mock_r2.assert_called_once()
@@ -290,12 +343,20 @@ class TestUploadCommand:
 
         _make_jsonl_fixture(tmp_path, "test-channel", "2024-06-15")
 
-        result = runner.invoke(main, [
-            "upload", "--date", "2024-06-15",
-            "--input-dir", str(tmp_path),
-            "--target", "r2",
-            "--config", str(tmp_config_file),
-        ])
+        result = runner.invoke(
+            main,
+            [
+                "upload",
+                "--date",
+                "2024-06-15",
+                "--input-dir",
+                str(tmp_path),
+                "--target",
+                "r2",
+                "--config",
+                str(tmp_config_file),
+            ],
+        )
 
         assert result.exit_code == 0
         mock_r2.assert_called_once()
@@ -321,21 +382,79 @@ class TestUploadCommand:
             d1=D1Config(),
         )
         mock_insert.return_value = D1InsertResult(
-            total_rows=1, rows_inserted=1, batches_executed=1,
+            total_rows=1,
+            rows_inserted=1,
+            batches_executed=1,
         )
 
         _make_jsonl_fixture(tmp_path, "test-channel", "2024-06-15")
 
-        result = runner.invoke(main, [
-            "upload", "--date", "2024-06-15",
-            "--input-dir", str(tmp_path),
-            "--target", "d1",
-            "--config", str(tmp_config_file),
-        ])
+        result = runner.invoke(
+            main,
+            [
+                "upload",
+                "--date",
+                "2024-06-15",
+                "--input-dir",
+                str(tmp_path),
+                "--target",
+                "d1",
+                "--config",
+                str(tmp_config_file),
+            ],
+        )
 
         assert result.exit_code == 0
         mock_insert.assert_called_once()
         mock_save_wm.assert_called_once()
+
+    @patch("discord_etl.cli.save_watermark")
+    @patch("discord_etl.cli.insert_messages_batch")
+    @patch("discord_etl.cli.load_config")
+    def test_upload_d1_skips_watermark_on_insert_error(
+        self,
+        mock_load_config: MagicMock,
+        mock_insert: MagicMock,
+        mock_save_wm: MagicMock,
+        runner: CliRunner,
+        tmp_config_file: Path,
+        tmp_path: Path,
+    ) -> None:
+        from discord_etl.config import AppConfig, ChannelConfig, D1Config, DiscordApiConfig
+        from discord_etl.d1 import D1InsertResult
+
+        mock_load_config.return_value = AppConfig(
+            discord=DiscordApiConfig(),
+            channels=[ChannelConfig(name="test-channel", id="123")],
+            d1=D1Config(),
+        )
+        mock_insert.return_value = D1InsertResult(
+            total_rows=1,
+            rows_inserted=0,
+            batches_executed=1,
+            errors=["boom"],
+        )
+
+        _make_jsonl_fixture(tmp_path, "test-channel", "2024-06-15")
+
+        result = runner.invoke(
+            main,
+            [
+                "upload",
+                "--date",
+                "2024-06-15",
+                "--input-dir",
+                str(tmp_path),
+                "--target",
+                "d1",
+                "--config",
+                str(tmp_config_file),
+            ],
+        )
+
+        assert result.exit_code == 1
+        mock_insert.assert_called_once()
+        mock_save_wm.assert_not_called()
 
 
 class TestQualityCheckCommand:
@@ -363,10 +482,16 @@ class TestQualityCheckCommand:
             [{"channel_id": "123", "channel_name": "test-channel", "last_message_id": "100"}],
         ]
 
-        result = runner.invoke(main, [
-            "quality-check", "--date", "2024-06-15",
-            "--config", str(tmp_config_file),
-        ])
+        result = runner.invoke(
+            main,
+            [
+                "quality-check",
+                "--date",
+                "2024-06-15",
+                "--config",
+                str(tmp_config_file),
+            ],
+        )
 
         assert result.exit_code == 0
         assert "Quality check passed" in result.output
@@ -390,9 +515,15 @@ class TestQualityCheckCommand:
         # 빈 결과 -> fail
         mock_query.return_value = []
 
-        result = runner.invoke(main, [
-            "quality-check", "--date", "2024-06-15",
-            "--config", str(tmp_config_file),
-        ])
+        result = runner.invoke(
+            main,
+            [
+                "quality-check",
+                "--date",
+                "2024-06-15",
+                "--config",
+                str(tmp_config_file),
+            ],
+        )
 
         assert result.exit_code == 1

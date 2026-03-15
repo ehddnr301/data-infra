@@ -27,6 +27,8 @@ class TestDiscordDagIntegrity:
         assert dag_file.exists(), f"DAG 파일 없음: {dag_file}"
 
         spec = importlib.util.spec_from_file_location("discord_daily", dag_file)
+        assert spec is not None
+        assert spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
@@ -35,18 +37,12 @@ class TestDiscordDagIntegrity:
         from airflow.models import DagBag
 
         dagbag = DagBag(dag_folder=str(DAG_DIR), include_examples=False)
-        assert "discord_daily" in dagbag.dags, (
-            f"DAG 없음. import errors: {dagbag.import_errors}"
-        )
+        assert "discord_daily" in dagbag.dags, f"DAG 없음. import errors: {dagbag.import_errors}"
         dag = dagbag.dags["discord_daily"]
 
-        assert str(dag.schedule_interval) == "0 3 * * *", (
-            f"스케줄 불일치: {dag.schedule_interval}"
-        )
+        assert str(dag.schedule_interval) == "0 3 * * *", f"스케줄 불일치: {dag.schedule_interval}"
         assert dag.catchup is False, "catchup이 True로 변경됨"
-        assert dag.max_active_runs == 1, (
-            f"max_active_runs 불일치: {dag.max_active_runs}"
-        )
+        assert dag.max_active_runs == 1, f"max_active_runs 불일치: {dag.max_active_runs}"
 
     def test_dag_has_expected_tasks(self):
         """DAG에 예상 Task들이 포함되어 있다."""
@@ -59,22 +55,25 @@ class TestDiscordDagIntegrity:
         task_ids = {t.task_id for t in dag.tasks}
 
         expected_tasks = {
-            "fetch", "validate", "upload_r2", "upload_d1",
-            "quality_check", "summary", "cleanup",
+            "fetch",
+            "validate",
+            "upload_r2",
+            "upload_d1",
+            "quality_check",
+            "check_profile_targets",
+            "enrich_profiles",
+            "summary",
+            "cleanup",
         }
-        assert expected_tasks.issubset(task_ids), (
-            f"누락 Task: {expected_tasks - task_ids}"
-        )
+        assert expected_tasks.issubset(task_ids), f"누락 Task: {expected_tasks - task_ids}"
 
     def test_dag_task_count(self):
-        """DAG에 7개의 Task가 있다."""
+        """DAG에 9개의 Task가 있다."""
         from airflow.models import DagBag
 
         dagbag = DagBag(dag_folder=str(DAG_DIR), include_examples=False)
         dag = dagbag.dags["discord_daily"]
-        assert len(dag.tasks) == 7, (
-            f"Task 수 불일치: {len(dag.tasks)} (expected 7)"
-        )
+        assert len(dag.tasks) == 9, f"Task 수 불일치: {len(dag.tasks)} (expected 9)"
 
     def test_task_dependencies(self):
         """Task 의존성 그래프가 올바르다."""
@@ -93,12 +92,20 @@ class TestDiscordDagIntegrity:
         assert "validate" in [t.task_id for t in upload_r2.upstream_list]
         assert "validate" in [t.task_id for t in upload_d1.upstream_list]
 
-        # upload_d1 → quality_check → summary → cleanup
+        # upload_d1 → quality_check → check_profile_targets → enrich_profiles → summary → cleanup
         quality = dag.get_task("quality_check")
-        assert "upload_d1" in [t.task_id for t in quality.upstream_list]
+        quality_upstream = {t.task_id for t in quality.upstream_list}
+        assert "upload_d1" in quality_upstream
+        assert "upload_r2" not in quality_upstream
+
+        check_targets = dag.get_task("check_profile_targets")
+        assert "quality_check" in [t.task_id for t in check_targets.upstream_list]
+
+        enrich = dag.get_task("enrich_profiles")
+        assert "check_profile_targets" in [t.task_id for t in enrich.upstream_list]
 
         summary = dag.get_task("summary")
-        assert "quality_check" in [t.task_id for t in summary.upstream_list]
+        assert "enrich_profiles" in [t.task_id for t in summary.upstream_list]
 
         cleanup = dag.get_task("cleanup")
         cleanup_upstream_ids = {t.task_id for t in cleanup.upstream_list}

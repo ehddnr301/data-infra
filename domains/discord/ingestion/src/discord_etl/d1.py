@@ -24,7 +24,11 @@ from discord_etl.config import D1Config
 from discord_etl.models import (
     DISCORD_MESSAGES_COLUMNS,
     DISCORD_MESSAGES_TABLE,
+    DISCORD_USER_PROFILES_COLUMNS,
+    DISCORD_USER_PROFILES_TABLE,
     DiscordMessage,
+    DiscordUserProfile,
+    ProfileTarget,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,6 +36,7 @@ logger = logging.getLogger(__name__)
 _D1_API_BASE = "https://api.cloudflare.com/client/v4/accounts"
 MAX_BATCH_BYTES = 700_000
 MAX_BINDING_PARAMS = 100
+MAX_PROFILE_ROW_BYTES = 100_000
 
 T = TypeVar("T")
 
@@ -53,13 +58,15 @@ def _retry_with_backoff(
     max_retries: int = 3,
     base_delay: float = 1.0,
     max_delay: float = 30.0,
-    retryable: Callable[[Exception], bool] | None = None,
+    is_retryable: Callable[[Exception], bool] | None = None,
 ) -> T:
     """지수 백오프로 함수를 재시도한다."""
-    if retryable is None:
+    if is_retryable is None:
 
-        def retryable(e: Exception) -> bool:
+        def _is_retryable(e: Exception) -> bool:
             return False
+
+        is_retryable = _is_retryable
 
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
@@ -67,18 +74,23 @@ def _retry_with_backoff(
             return fn()
         except Exception as e:
             last_exc = e
-            if attempt >= max_retries or not retryable(e):
+            if attempt >= max_retries or not is_retryable(e):
                 raise
             delay = min(base_delay * (2**attempt), max_delay)
             jitter = delay * 0.2 * (2 * random.random() - 1)
             sleep_time = max(0.0, delay + jitter)
             logger.warning(
                 "Retry %d/%d after %.1fs: %s",
-                attempt + 1, max_retries, sleep_time, e,
+                attempt + 1,
+                max_retries,
+                sleep_time,
+                e,
             )
             time.sleep(sleep_time)
 
-    raise last_exc  # type: ignore[misc]
+    if last_exc is not None:
+        raise RuntimeError("Retry loop exhausted") from last_exc
+    raise RuntimeError("Retry loop exhausted without captured exception")
 
 
 def _is_retryable_http_error(e: Exception) -> bool:
@@ -114,7 +126,7 @@ def _d1_query(
     return _retry_with_backoff(
         _do_request,
         max_retries=max_retries,
-        retryable=_is_retryable_http_error,
+        is_retryable=_is_retryable_http_error,
     )
 
 
@@ -135,7 +147,8 @@ def get_watermark(channel_id: str, config: D1Config) -> str:
     """채널별 last_message_id를 조회한다 (없으면 '0')."""
     rows = query_rows(
         "SELECT last_message_id FROM discord_watermarks WHERE channel_id = ?",
-        [channel_id], config,
+        [channel_id],
+        config,
     )
     return rows[0]["last_message_id"] if rows else "0"
 
@@ -171,7 +184,8 @@ def get_scan_cursor(channel_id: str, config: D1Config) -> str | None:
     """scan_cursor를 조회한다."""
     rows = query_rows(
         "SELECT scan_cursor FROM discord_watermarks WHERE channel_id = ?",
-        [channel_id], config,
+        [channel_id],
+        config,
     )
     if rows and rows[0].get("scan_cursor"):
         return rows[0]["scan_cursor"]
@@ -181,8 +195,7 @@ def get_scan_cursor(channel_id: str, config: D1Config) -> str | None:
 def save_scan_cursor(channel_id: str, cursor: str, config: D1Config) -> None:
     """scan_cursor를 UPDATE한다."""
     _d1_query(
-        "UPDATE discord_watermarks SET scan_cursor = ?, last_collected_at = ? "
-        "WHERE channel_id = ?",
+        "UPDATE discord_watermarks SET scan_cursor = ?, last_collected_at = ? WHERE channel_id = ?",
         [cursor, datetime.now(tz=UTC).isoformat(), channel_id],
         config,
     )
@@ -236,8 +249,7 @@ def _build_message_batches(
             continue
 
         if current_batch and (
-            current_bytes + row_bytes > MAX_BATCH_BYTES
-            or len(current_batch) >= max_rows_per_batch
+            current_bytes + row_bytes > MAX_BATCH_BYTES or len(current_batch) >= max_rows_per_batch
         ):
             batches.append(current_batch)
             current_batch = []
@@ -279,6 +291,132 @@ def insert_messages_batch(
             result.rows_inserted += len(batch)
         except Exception as e:
             error_msg = f"Batch {i + 1}/{len(batches)} failed: {e}"
+            result.errors.append(error_msg)
+            logger.error(error_msg)
+
+        result.batches_executed += 1
+
+    return result
+
+
+def get_missing_profile_count(config: D1Config) -> int:
+    rows = query_rows(
+        "SELECT COUNT(*) AS cnt FROM ("
+        "SELECT DISTINCT m.author_id "
+        "FROM discord_messages m "
+        "LEFT JOIN discord_user_profiles p ON p.user_id = m.author_id "
+        "WHERE m.author_id != '' AND p.user_id IS NULL"
+        ")",
+        [],
+        config,
+    )
+    if not rows:
+        return 0
+
+    raw_count = rows[0].get("cnt", 0)
+    try:
+        return int(raw_count)
+    except (TypeError, ValueError):
+        return 0
+
+
+def list_missing_profile_targets(limit: int, config: D1Config) -> list[ProfileTarget]:
+    rows = query_rows(
+        "SELECT "
+        "m.author_id AS user_id, "
+        "MAX(m.created_at) AS last_seen_at, "
+        "COUNT(*) AS message_count "
+        "FROM discord_messages m "
+        "LEFT JOIN discord_user_profiles p ON p.user_id = m.author_id "
+        "WHERE m.author_id != '' AND p.user_id IS NULL "
+        "GROUP BY m.author_id "
+        "ORDER BY last_seen_at DESC "
+        "LIMIT ?",
+        [limit],
+        config,
+    )
+
+    targets: list[ProfileTarget] = []
+    for row in rows:
+        raw_count = row.get("message_count", 0)
+        try:
+            message_count = int(raw_count)
+        except (TypeError, ValueError):
+            message_count = 0
+
+        targets.append(
+            ProfileTarget(
+                user_id=str(row.get("user_id", "")),
+                last_seen_at=str(row.get("last_seen_at", "")),
+                message_count=message_count,
+            ),
+        )
+
+    return [target for target in targets if target.user_id]
+
+
+def upsert_user_profiles_batch(
+    profiles: list[DiscordUserProfile],
+    config: D1Config,
+) -> D1InsertResult:
+    result = D1InsertResult(total_rows=len(profiles))
+
+    if not profiles:
+        return result
+
+    rows = [profile.to_d1_row() for profile in profiles]
+    columns = DISCORD_USER_PROFILES_COLUMNS
+    max_rows_per_batch = max(1, MAX_BINDING_PARAMS // len(columns))
+
+    filtered_rows: list[dict[str, Any]] = []
+    for row in rows:
+        row_data = [row.get(c) for c in columns]
+        row_bytes = len(json.dumps(row_data).encode())
+        if row_bytes > MAX_PROFILE_ROW_BYTES:
+            result.rows_skipped += 1
+            logger.warning(
+                "Oversized profile row skipped (%.1f KB): user_id=%s",
+                row_bytes / 1024,
+                row.get("user_id", "?"),
+            )
+            continue
+        filtered_rows.append(row)
+
+    batches = _build_message_batches(filtered_rows, columns, max_rows_per_batch)
+
+    for i, batch in enumerate(batches):
+        cols = ", ".join(columns)
+        placeholders = "(" + ", ".join("?" for _ in columns) + ")"
+        values = ", ".join(placeholders for _ in range(len(batch)))
+        sql = (
+            f"INSERT INTO {DISCORD_USER_PROFILES_TABLE} ({cols}) VALUES {values} "
+            "ON CONFLICT(user_id) DO UPDATE SET "
+            "username = excluded.username, "
+            "global_name = excluded.global_name, "
+            "avatar = excluded.avatar, "
+            "banner = excluded.banner, "
+            "accent_color = excluded.accent_color, "
+            "bio = excluded.bio, "
+            "pronouns = excluded.pronouns, "
+            "mutual_guild_count = excluded.mutual_guild_count, "
+            "mutual_friend_count = excluded.mutual_friend_count, "
+            "connected_account_count = excluded.connected_account_count, "
+            "source = excluded.source, "
+            "source_endpoint = excluded.source_endpoint, "
+            "fetched_at = excluded.fetched_at, "
+            "raw_payload = excluded.raw_payload "
+            "WHERE excluded.fetched_at > discord_user_profiles.fetched_at"
+        )
+
+        params: list[Any] = []
+        for row in batch:
+            params.extend(row.get(c) for c in columns)
+
+        try:
+            _d1_query(sql, params, config)
+            result.rows_inserted += len(batch)
+        except Exception as e:
+            error_msg = f"Profile batch {i + 1}/{len(batches)} failed: {e}"
             result.errors.append(error_msg)
             logger.error(error_msg)
 

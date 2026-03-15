@@ -21,8 +21,11 @@ def channel() -> ChannelConfig:
 def app_config() -> AppConfig:
     return AppConfig(
         discord=DiscordApiConfig(
-            limit=50, delay_sec=0.0, max_retries=1,
-            backoff_factor=0.01, chunk_pages=2,
+            limit=50,
+            delay_sec=0.0,
+            max_retries=1,
+            backoff_factor=0.01,
+            chunk_pages=2,
         ),
         channels=[ChannelConfig(name="test-channel", id="944039671707607060")],
         d1=D1Config(database_id="test-db", account_id="test-acc", api_token="test-tok"),
@@ -67,7 +70,9 @@ class TestCollectChannel:
         app_config: AppConfig,
     ) -> None:
         mock_insert.return_value = D1InsertResult(
-            total_rows=2, rows_inserted=2, batches_executed=1,
+            total_rows=2,
+            rows_inserted=2,
+            batches_executed=1,
         )
 
         mock_client = MagicMock()
@@ -102,7 +107,9 @@ class TestCollectChannel:
     ) -> None:
         """watermark 도달 시 수집 중단."""
         mock_insert.return_value = D1InsertResult(
-            total_rows=1, rows_inserted=1, batches_executed=1,
+            total_rows=1,
+            rows_inserted=1,
+            batches_executed=1,
         )
 
         mock_client = MagicMock()
@@ -163,7 +170,9 @@ class TestCollectChannel:
     ) -> None:
         """chunk_pages=2에서 2페이지 도달 시 플러시."""
         mock_insert.return_value = D1InsertResult(
-            total_rows=4, rows_inserted=4, batches_executed=1,
+            total_rows=4,
+            rows_inserted=4,
+            batches_executed=1,
         )
 
         mock_client = MagicMock()
@@ -180,7 +189,9 @@ class TestCollectChannel:
         mock_save_cursor.assert_called()  # 청크 플러시 후 cursor 저장
 
     def test_dry_run(
-        self, channel: ChannelConfig, app_config: AppConfig,
+        self,
+        channel: ChannelConfig,
+        app_config: AppConfig,
     ) -> None:
         """dry_run 모드에서 D1 저장 없이 수집만 시뮬레이션."""
         with (
@@ -198,7 +209,10 @@ class TestCollectChannel:
             ]
 
             stats = collect_channel(
-                channel, mock_client, app_config, dry_run=True,
+                channel,
+                mock_client,
+                app_config,
+                dry_run=True,
             )
 
             assert stats.messages_stored == 1
@@ -222,7 +236,9 @@ class TestCollectChannel:
             patch("discord_etl.collector.clear_scan_cursor"),
         ):
             mock_insert.return_value = D1InsertResult(
-                total_rows=1, rows_inserted=1, batches_executed=1,
+                total_rows=1,
+                rows_inserted=1,
+                batches_executed=1,
             )
 
             mock_client = MagicMock()
@@ -262,7 +278,9 @@ class TestCollectChannel:
         ]
 
         stats = collect_channel(
-            channel, mock_client, app_config,
+            channel,
+            mock_client,
+            app_config,
             output_dir=tmp_path,
             batch_date="2024-06-15",
         )
@@ -308,7 +326,9 @@ class TestCollectChannel:
         ]
 
         stats = collect_channel(
-            channel, mock_client, app_config,
+            channel,
+            mock_client,
+            app_config,
             output_dir=tmp_path,
             batch_date="2024-06-15",
         )
@@ -318,4 +338,44 @@ class TestCollectChannel:
         # watermark 갱신 안 됨
         mock_save_wm.assert_not_called()
         # D1 insert 호출 안 됨
+        mock_insert.assert_not_called()
+
+    @patch("discord_etl.collector.clear_scan_cursor")
+    @patch("discord_etl.collector.save_watermark")
+    @patch("discord_etl.collector.insert_messages_batch")
+    @patch("discord_etl.collector.get_watermark", return_value="50")
+    def test_collect_channel_output_dir_uses_watermark(
+        self,
+        mock_get_wm: MagicMock,
+        mock_insert: MagicMock,
+        mock_save_wm: MagicMock,
+        mock_clear_cursor: MagicMock,
+        channel: ChannelConfig,
+        app_config: AppConfig,
+        tmp_path: Path,
+    ) -> None:
+        mock_client = MagicMock()
+        mock_client.fetch_messages.side_effect = [
+            [_make_raw_message("100"), _make_raw_message("80")],
+            [_make_raw_message("30"), _make_raw_message("20")],
+        ]
+
+        stats = collect_channel(
+            channel,
+            mock_client,
+            app_config,
+            output_dir=tmp_path,
+            batch_date="2024-06-15",
+        )
+
+        assert stats.error is None
+        assert stats.pages_fetched == 2
+        assert stats.messages_stored == 2
+
+        jsonl_path = tmp_path / "test-channel" / "2024-06-15.jsonl"
+        lines = jsonl_path.read_bytes().strip().split(b"\n")
+        ids = {orjson.loads(line)["id"] for line in lines}
+        assert ids == {"100", "80"}
+        mock_get_wm.assert_called_once()
+        mock_save_wm.assert_not_called()
         mock_insert.assert_not_called()

@@ -39,7 +39,9 @@ class TestLoadConfig:
             load_config(config_path)
 
     def test_env_override_d1(
-        self, tmp_config_file: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_config_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("D1_DATABASE_ID", "env-db-id")
         monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "env-account-id")
@@ -75,3 +77,31 @@ class TestLoadConfig:
         assert config.discord.limit == 50
         assert config.discord.delay_sec == 1.0
         assert config.discord.max_retries == 3
+        assert config.profile_enrichment.enabled is False
+        assert config.profile_enrichment.guild_id == ""
+
+    def test_profile_enrichment_enabled_without_guild_id_fails(self, tmp_path: Path) -> None:
+        data = {
+            "channels": [{"name": "test", "id": "123"}],
+            "profile_enrichment": {"enabled": True},
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(data), encoding="utf-8")
+
+        with pytest.raises((ValueError, Exception)):
+            load_config(config_path)
+
+    def test_profile_enrichment_enabled_with_guild_id(self, tmp_path: Path) -> None:
+        data = {
+            "channels": [{"name": "test", "id": "123"}],
+            "profile_enrichment": {
+                "enabled": True,
+                "guild_id": "944032730050621450",
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(data), encoding="utf-8")
+
+        config = load_config(config_path)
+        assert config.profile_enrichment.enabled is True
+        assert config.profile_enrichment.guild_id == "944032730050621450"

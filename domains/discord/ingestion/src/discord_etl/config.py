@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 
@@ -32,10 +32,33 @@ class D1Config(BaseModel):
     api_token: str = ""
 
 
+class ProfileEnrichmentConfig(BaseModel):
+    enabled: bool = False
+    guild_id: str = ""
+    type: str = "popout"
+    with_mutual_guilds: bool = True
+    with_mutual_friends: bool = True
+    with_mutual_friends_count: bool = False
+    max_users_per_run: int = Field(default=1000, ge=1, le=50_000)
+    request_timeout_sec: int = Field(default=30, ge=1, le=120)
+    max_retries: int = Field(default=3, ge=0, le=10)
+    per_user_delay_sec: float = Field(default=5.0, ge=0.0, le=600.0)
+    cooldown_on_429_sec: int = Field(default=300, ge=1, le=86_400)
+    max_consecutive_429: int = Field(default=20, ge=1, le=10_000)
+    request_template_path: str = ""
+
+    @model_validator(mode="after")
+    def guild_id_required_when_enabled(self) -> ProfileEnrichmentConfig:
+        if self.enabled and not self.guild_id:
+            raise ValueError("guild_id is required when profile_enrichment.enabled=true")
+        return self
+
+
 class AppConfig(BaseModel):
     discord: DiscordApiConfig = Field(default_factory=DiscordApiConfig)
     channels: list[ChannelConfig] = Field(min_length=1)
     d1: D1Config = Field(default_factory=D1Config)
+    profile_enrichment: ProfileEnrichmentConfig = Field(default_factory=ProfileEnrichmentConfig)
 
     @field_validator("channels")
     @classmethod

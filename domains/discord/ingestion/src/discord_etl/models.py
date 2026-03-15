@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
 from pydantic import BaseModel
 
 
@@ -12,25 +16,27 @@ class DiscordMessage(BaseModel):
     027 스키마: attachment/embed/reaction은 count만 저장.
     """
 
-    id: str                                    # snowflake ID (PRIMARY KEY)
+    id: str  # snowflake ID (PRIMARY KEY)
     channel_id: str
-    channel_name: str = ""                     # 채널명 (수집 시 주입)
+    channel_name: str = ""  # 채널명 (수집 시 주입)
     author_id: str
     author_username: str
-    content: str                               # 메시지 본문 전체 저장
-    message_type: int = 0                      # 0=default, 19=reply 등
-    referenced_message_id: str | None = None   # 답글 대상
+    content: str  # 메시지 본문 전체 저장
+    message_type: int = 0  # 0=default, 19=reply 등
+    referenced_message_id: str | None = None  # 답글 대상
     attachment_count: int = 0
     embed_count: int = 0
     reaction_count: int = 0
     mention_count: int = 0
     pinned: bool = False
-    created_at: str = ""                       # ISO 8601 문자열
+    created_at: str = ""  # ISO 8601 문자열
     edited_at: str | None = None
-    batch_date: str = ""                       # YYYY-MM-DD
+    batch_date: str = ""  # YYYY-MM-DD
 
     @classmethod
-    def from_api_response(cls, raw: dict, *, channel_name: str = "", batch_date: str = "") -> DiscordMessage:
+    def from_api_response(
+        cls, raw: dict, *, channel_name: str = "", batch_date: str = ""
+    ) -> DiscordMessage:
         """Discord API 응답 dict -> DiscordMessage 변환.
 
         API 응답의 중첩 구조를 평탄화한다.
@@ -83,13 +89,131 @@ class DiscordMessage(BaseModel):
         }
 
 
+@dataclass
+class ProfileTarget:
+    user_id: str
+    last_seen_at: str
+    message_count: int
+
+
+class DiscordUserProfile(BaseModel):
+    user_id: str
+    username: str | None = None
+    global_name: str | None = None
+    avatar: str | None = None
+    banner: str | None = None
+    accent_color: int | None = None
+    bio: str | None = None
+    pronouns: str | None = None
+    mutual_guild_count: int = 0
+    mutual_friend_count: int = 0
+    connected_account_count: int = 0
+    source: str = "users_profile_api"
+    source_endpoint: str
+    fetched_at: str
+    raw_payload: str
+
+    @classmethod
+    def from_profile_response(
+        cls,
+        raw: dict,
+        *,
+        source_endpoint: str,
+        fetched_at: str | None = None,
+    ) -> DiscordUserProfile:
+        user = raw.get("user", {})
+        user_profile = raw.get("user_profile", {})
+
+        mutual_guilds = raw.get("mutual_guilds", [])
+        mutual_friends = raw.get("mutual_friends", [])
+        connected_accounts = raw.get("connected_accounts", [])
+
+        mutual_friend_count_raw = raw.get("mutual_friends_count")
+        if isinstance(mutual_friend_count_raw, int):
+            mutual_friend_count = mutual_friend_count_raw
+        elif isinstance(mutual_friends, list):
+            mutual_friend_count = len(mutual_friends)
+        else:
+            mutual_friend_count = 0
+
+        return cls(
+            user_id=str(user.get("id", "")),
+            username=user.get("username"),
+            global_name=user.get("global_name"),
+            avatar=user.get("avatar"),
+            banner=user.get("banner"),
+            accent_color=user.get("accent_color"),
+            bio=user_profile.get("bio") or user.get("bio"),
+            pronouns=user_profile.get("pronouns"),
+            mutual_guild_count=len(mutual_guilds) if isinstance(mutual_guilds, list) else 0,
+            mutual_friend_count=mutual_friend_count,
+            connected_account_count=len(connected_accounts)
+            if isinstance(connected_accounts, list)
+            else 0,
+            source="users_profile_api",
+            source_endpoint=source_endpoint,
+            fetched_at=fetched_at or datetime.now(tz=UTC).isoformat(),
+            raw_payload=json.dumps(raw, ensure_ascii=False),
+        )
+
+    def to_d1_row(self) -> dict:
+        return {
+            "user_id": self.user_id,
+            "username": self.username,
+            "global_name": self.global_name,
+            "avatar": self.avatar,
+            "banner": self.banner,
+            "accent_color": self.accent_color,
+            "bio": self.bio,
+            "pronouns": self.pronouns,
+            "mutual_guild_count": self.mutual_guild_count,
+            "mutual_friend_count": self.mutual_friend_count,
+            "connected_account_count": self.connected_account_count,
+            "source": self.source,
+            "source_endpoint": self.source_endpoint,
+            "fetched_at": self.fetched_at,
+            "raw_payload": self.raw_payload,
+        }
+
+
 # D1 테이블 정의
 DISCORD_MESSAGES_TABLE = "discord_messages"
 DISCORD_MESSAGES_COLUMNS = [
-    "id", "channel_id", "channel_name", "author_id", "author_username",
-    "content", "message_type", "referenced_message_id",
-    "attachment_count", "embed_count", "reaction_count",
-    "mention_count", "pinned", "created_at", "edited_at", "batch_date",
+    "id",
+    "channel_id",
+    "channel_name",
+    "author_id",
+    "author_username",
+    "content",
+    "message_type",
+    "referenced_message_id",
+    "attachment_count",
+    "embed_count",
+    "reaction_count",
+    "mention_count",
+    "pinned",
+    "created_at",
+    "edited_at",
+    "batch_date",
 ]
 
 DISCORD_WATERMARKS_TABLE = "discord_watermarks"
+
+DISCORD_USER_PROFILES_TABLE = "discord_user_profiles"
+DISCORD_USER_PROFILES_COLUMNS = [
+    "user_id",
+    "username",
+    "global_name",
+    "avatar",
+    "banner",
+    "accent_color",
+    "bio",
+    "pronouns",
+    "mutual_guild_count",
+    "mutual_friend_count",
+    "connected_account_count",
+    "source",
+    "source_endpoint",
+    "fetched_at",
+    "raw_payload",
+]
