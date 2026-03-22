@@ -30,14 +30,14 @@ describe('DomainDetailPage', () => {
           description: 'Repository datasets.',
           listing_count: 2,
           featured_listing_slug: 'push-events.v1',
-          featured_listing_title: 'Push Events',
+          featured_listing_title: 'dl_push_events',
           listings: [
             {
               id: 'listing-github-push-events',
               dataset_id: 'github.push-events.v1',
               domain: 'github',
               slug: 'push-events.v1',
-              title: 'Push Events',
+              title: 'dl_push_events',
               subtitle: 'GitHub dataset product',
               description: 'Release monitoring',
               category: 'engineering',
@@ -68,6 +68,6 @@ describe('DomainDetailPage', () => {
     render(<DomainDetailPage />)
 
     expect(screen.getByText('GitHub hub')).toBeInTheDocument()
-    expect(screen.getAllByText('Push Events').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('dl_push_events').length).toBeGreaterThan(0)
   })
 })

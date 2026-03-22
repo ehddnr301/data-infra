@@ -144,6 +144,73 @@ def _dataset_description(table_name: str, event_display_name: str) -> str:
     )
 
 
+def _dataset_purpose(table_name: str) -> str | None:
+    purposes: dict[str, str] = {
+        "dl_push_events": (
+            "저장소별 코드 생산과 유지보수 흐름을 추적하고, 필요 시 commit enrich detail까지 "
+            "내려가 실제 변경 파일/주제를 분석합니다."
+        ),
+        "dl_create_events": (
+            "새 repository 생성 신호를 builder launch 관점에서 해석하고 이후 활성화 흐름을 연결합니다."
+        ),
+        "dl_pull_request_events": (
+            "PR 생성·수정·머지 흐름을 기준으로 change proposal과 협업 속도를 추적합니다."
+        ),
+        "dl_pull_request_review_events": (
+            "코드 리뷰 참여와 승인 흐름을 파악하고 reviewer contribution을 읽어냅니다."
+        ),
+        "dl_pull_request_review_comment_events": (
+            "diff 단위 피드백을 통해 어떤 파일/주제에서 review discussion이 발생했는지 분석합니다."
+        ),
+        "dl_watch_events": (
+            "저장소 관심 신호를 통해 내부/외부 support 흐름과 프로젝트 주목도를 파악합니다."
+        ),
+    }
+    return purposes.get(table_name)
+
+
+def _dataset_limitations(table_name: str) -> list[str]:
+    limitations = [
+        "D1 행은 정규화된 activity index이며, 상세 파일 변경이나 원문 payload는 R2 enrich 경로를 함께 조회해야 할 수 있습니다."
+    ]
+
+    if table_name == "dl_watch_events":
+        limitations.append("watch/star 신호만으로는 실제 코드 기여 여부를 단정할 수 없습니다.")
+
+    if table_name == "dl_create_events":
+        limitations.append("repository 생성만으로 후속 활성화가 보장되지는 않으며 push/PR 후속 신호를 함께 봐야 합니다.")
+
+    if table_name == "dl_pull_request_review_comment_events":
+        limitations.append("diff_hunk는 리뷰 문맥 일부만 담으므로 전체 변경 범위는 enrich PR file detail과 함께 읽어야 합니다.")
+
+    return limitations
+
+
+def _dataset_usage_examples(table_name: str) -> list[str]:
+    examples: dict[str, list[str]] = {
+        "dl_push_events": [
+            "최근 push가 많았던 repo를 찾은 뒤 `github-archive-raw/enriched/commits/{owner}/{repo}/{sha}.json` 으로 실제 변경 파일과 커밋 메시지를 분석합니다.",
+            "특정 contributor의 commit 흐름을 모아 어떤 주제/파일 영역에 자주 기여했는지 파악합니다.",
+        ],
+        "dl_create_events": [
+            "최근 생성된 repository를 찾은 뒤 후속 push/PR event를 연결해 builder launch 이후 실제 활성화 여부를 확인합니다.",
+        ],
+        "dl_pull_request_events": [
+            "최근 활발한 PR을 찾은 뒤 `github-archive-raw/enriched/pr-files/{owner}/{repo}/{pr_number}.json` 으로 changed files와 변경 범위를 분석합니다.",
+        ],
+        "dl_pull_request_review_events": [
+            "리뷰가 많이 달린 PR을 찾은 뒤 `github-archive-raw/enriched/pr-reviews/{owner}/{repo}/{pr_number}.json` 으로 reviewer feedback 흐름을 확인합니다.",
+        ],
+        "dl_pull_request_review_comment_events": [
+            "`diff_hunk` 로 리뷰 hotspot을 찾은 뒤 `github-archive-raw/enriched/pr-files/{owner}/{repo}/{pr_number}.json` 과 함께 읽어 어떤 코드 영역이 집중 피드백을 받았는지 분석합니다.",
+        ],
+        "dl_watch_events": [
+            "관심 신호가 높은 repo를 찾은 뒤 push/PR dataset과 함께 읽어 관심 대비 실제 기여 전환 여부를 비교합니다.",
+        ],
+    }
+    return examples.get(table_name, ["최근 활동 추세를 점검하고 필요 시 연관 GitHub raw/enrich detail과 함께 해석합니다."])
+
+
 def build_column_metadata(table_name: str, columns: list[str]) -> list[dict[str, Any]]:
     return [
         {
@@ -245,6 +312,9 @@ def build_dataset_snapshots() -> list[dict[str, Any]]:
                         },
                         "owner": "github-ingestion",
                         "tags": ["github", "etl", "auto-sync"],
+                        "purpose": _dataset_purpose(table_name),
+                        "limitations": _dataset_limitations(table_name),
+                        "usage_examples": _dataset_usage_examples(table_name),
                     },
                     "columns": build_column_metadata(table_name, columns),
                     "lineage": build_lineage_graph(dataset_id, dataset_name),

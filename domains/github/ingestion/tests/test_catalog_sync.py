@@ -44,6 +44,23 @@ def test_build_dataset_snapshots_name_and_description_rules() -> None:
     assert "rest_api" in dataset["description"]
     assert "활동 추세 분석" in dataset["description"]
     assert dataset["schema_json"]["display_name"] == "Push Events"
+    assert "변경 파일" in dataset["purpose"]
+    assert any("enriched/commits" in example for example in dataset["usage_examples"])
+    assert any("R2 enrich 경로" in item for item in dataset["limitations"])
+
+
+def test_build_dataset_snapshots_review_comment_examples_reference_enrich() -> None:
+    snapshots = build_dataset_snapshots()
+    review_snapshot = next(
+        item
+        for item in snapshots
+        if item["dataset_id"] == "github.pull-request-review-comment-events.v1"
+    )
+    dataset = review_snapshot["snapshot"]["dataset"]
+
+    assert any("diff_hunk" in example for example in dataset["usage_examples"])
+    assert any("enriched/pr-files" in example for example in dataset["usage_examples"])
+    assert any("diff_hunk" in item for item in dataset["limitations"])
 
 
 def test_build_dataset_snapshots_column_description_rules() -> None:

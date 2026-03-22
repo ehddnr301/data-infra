@@ -11,8 +11,10 @@ export const MARKETPLACE_DOMAIN_LABELS: Record<DomainName, string> = {
 }
 
 export const MARKETPLACE_DOMAIN_DESCRIPTIONS: Record<DomainName, string> = {
-  github: 'Repository, PR, issue, and release datasets curated for engineering workflows.',
-  discord: 'Community, moderation, and collector datasets curated for community operations.',
+  github:
+    'gharchive.org and GitHub REST API daily batches for repository activity, builder launches, and community interest across PseudoLab projects.',
+  discord:
+    'Privacy-aware Discord Bot/API batches for community messages and collector health, focused on public study channels and excluding DMs.',
   linkedin: 'Professional network datasets reserved for future marketplace expansion.',
   members: 'Member relationship datasets reserved for future marketplace expansion.',
 }

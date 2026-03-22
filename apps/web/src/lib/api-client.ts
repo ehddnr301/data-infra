@@ -1,6 +1,28 @@
 import type { ProblemDetail } from '@pseudolab/shared-types'
 
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8787'
+const LOCAL_API_BASE = 'http://localhost:8787'
+
+export function resolveApiBase(
+  envApiUrl = import.meta.env.VITE_API_URL,
+  locationOrigin = typeof window !== 'undefined' ? window.location.origin : undefined,
+  hostname = typeof window !== 'undefined' ? window.location.hostname : undefined,
+): string {
+  if (envApiUrl) {
+    return envApiUrl
+  }
+
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return LOCAL_API_BASE
+  }
+
+  if (locationOrigin) {
+    return locationOrigin
+  }
+
+  return LOCAL_API_BASE
+}
+
+const API_BASE = resolveApiBase()
 
 export class ApiError extends Error {
   constructor(

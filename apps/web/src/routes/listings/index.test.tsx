@@ -62,7 +62,7 @@ describe('ListingsPage', () => {
             dataset_id: 'github.push-events.v1',
             domain: 'github',
             slug: 'push-events.v1',
-            title: 'Push Events',
+            title: 'dl_push_events',
             subtitle: 'GitHub dataset product',
             description: 'Release and throughput monitoring',
             category: 'engineering',
@@ -94,7 +94,7 @@ describe('ListingsPage', () => {
     render(<ListingsPage />)
 
     expect(screen.getByText('Discord Messages')).toBeInTheDocument()
-    expect(screen.getByText('Push Events')).toBeInTheDocument()
+    expect(screen.getByText('dl_push_events')).toBeInTheDocument()
   })
 
   it('filters by category', () => {
@@ -105,7 +105,7 @@ describe('ListingsPage', () => {
     })
 
     expect(screen.queryByText('Discord Messages')).not.toBeInTheDocument()
-    expect(screen.getByText('Push Events')).toBeInTheDocument()
+    expect(screen.getByText('dl_push_events')).toBeInTheDocument()
   })
 
   it('sorts by name', () => {
@@ -117,6 +117,6 @@ describe('ListingsPage', () => {
 
     const cards = screen.getAllByTestId('listing-card')
     expect(cards[0]?.textContent).toContain('Discord Messages')
-    expect(cards[1]?.textContent).toContain('Push Events')
+    expect(cards[1]?.textContent).toContain('dl_push_events')
   })
 })
