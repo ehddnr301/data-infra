@@ -1,6 +1,7 @@
 """REST API CLI 명령어 테스트."""
 from __future__ import annotations
 
+from datetime import timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -134,7 +135,49 @@ class TestRestFetchCommand:
             "--backfill", "--config", str(tmp_config),
         ])
         assert result.exit_code == 0, f"Output: {result.output}\nException: {result.exception}"
-        mock_collector.collect_all.assert_called_once_with(backfill=True)
+        mock_collector.collect_all.assert_called_once_with(
+            backfill=True,
+            target_start=None,
+            target_end=None,
+        )
+
+    @patch("gharchive_etl.rest_api_collector.RestApiCollector")
+    @patch("gharchive_etl.github_api.GitHubApiClient")
+    def test_target_hour_window_passed_to_collector(
+        self,
+        mock_api_cls: MagicMock,
+        mock_collector_cls: MagicMock,
+        runner: CliRunner,
+        tmp_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """--target-hour-start가 1시간 윈도우로 collector에 전달된다."""
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+
+        from gharchive_etl.rest_api_collector import RestApiCollectionSummary
+
+        mock_api = MagicMock()
+        mock_api.close = MagicMock()
+        mock_api_cls.return_value = mock_api
+
+        mock_collector = MagicMock()
+        mock_collector.collect_all.return_value = ([], RestApiCollectionSummary())
+        mock_collector_cls.return_value = mock_collector
+
+        result = runner.invoke(main, [
+            "rest-fetch",
+            "--output-jsonl", str(tmp_path / "out.jsonl"),
+            "--target-hour-start", "2026-04-01T12:00:00Z",
+            "--config", str(tmp_config),
+        ])
+
+        assert result.exit_code == 0, f"Output: {result.output}\nException: {result.exception}"
+        kwargs = mock_collector.collect_all.call_args.kwargs
+        assert kwargs["backfill"] is False
+        assert kwargs["target_start"].isoformat() == "2026-04-01T12:00:00+00:00"
+        assert kwargs["target_start"].tzinfo == timezone.utc
+        assert kwargs["target_end"].isoformat() == "2026-04-01T13:00:00+00:00"
 
 
 class TestUploadSourceOption:

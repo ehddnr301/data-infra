@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -194,6 +195,46 @@ class TestRestApiCollector:
         cache = json.loads(cache_path.read_text())
         assert "Pseudo-Lab" in cache
         assert cache["Pseudo-Lab"]["etag"] == 'W/"new-etag"'
+
+    def test_target_window_filters_events_to_requested_hour(self, tmp_path: Path) -> None:
+        """target window 지정 시 해당 시간대 created_at만 남긴다."""
+        config = _make_app_config()
+        api = _mock_api_client()
+        api.fetch_org_events.return_value = _make_api_result(
+            data=[
+                {
+                    "id": "1",
+                    "type": "PushEvent",
+                    "actor": {"id": 1, "login": "u"},
+                    "repo": {"id": 1, "name": "o/r"},
+                    "created_at": "2026-04-01T11:59:59Z",
+                },
+                {
+                    "id": "2",
+                    "type": "PushEvent",
+                    "actor": {"id": 1, "login": "u"},
+                    "repo": {"id": 1, "name": "o/r"},
+                    "created_at": "2026-04-01T12:15:00Z",
+                },
+                {
+                    "id": "3",
+                    "type": "PushEvent",
+                    "actor": {"id": 1, "login": "u"},
+                    "repo": {"id": 1, "name": "o/r"},
+                    "created_at": "2026-04-01T13:00:00Z",
+                },
+            ]
+        )
+
+        collector = RestApiCollector(api, config, etag_cache_path=tmp_path / "etag.json")
+        normalized, summary = collector.collect_all(
+            target_start=datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc),
+            target_end=datetime(2026, 4, 1, 13, 0, tzinfo=timezone.utc),
+        )
+
+        assert [event.id for event in normalized] == ["2"]
+        assert summary.total_events == 1
+        assert summary.results[0].new_events == 1
 
     def test_api_call_count_tracking(self, tmp_path: Path) -> None:
         """API 호출 횟수 추적."""

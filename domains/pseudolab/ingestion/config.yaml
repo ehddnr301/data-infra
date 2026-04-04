@@ -1,0 +1,2 @@
+snapshot_retention_days: 30
+parallel_tasks: 10

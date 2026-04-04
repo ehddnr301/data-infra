@@ -64,7 +64,7 @@ def extract_commit_targets(
     sql = (
         "SELECT DISTINCT repo_name, commit_sha "
         "FROM dl_push_events "
-        "WHERE commit_sha != '__no_commits__'"
+        "WHERE commit_sha != '__no_commits__' AND commit_sha NOT LIKE '__empty__%'"
     )
     params: list[Any] = []
     if base_date:
@@ -188,7 +188,7 @@ def extract_wiki_targets(config: D1Config) -> list[dict[str, Any]]:
     return query_rows(
         "SELECT DISTINCT repo_name, page_name "
         "FROM dl_gollum_events "
-        "WHERE page_name != '__no_pages__'",
+        "WHERE page_name != '__no_pages__' AND page_name NOT LIKE '__empty__%'",
         [],
         config,
     )
@@ -226,10 +226,12 @@ def _enrich_single_item(
 
     # fetch_xxx 메서드에 따라 결과 타입이 다름
     if isinstance(result, GitHubApiResult):
-        if result.skipped or result.error:
+        if result.skipped:
+            progress.skipped += 1
+            return
+        if result.error:
             progress.failed += 1
-            if result.error:
-                progress.errors.append(f"{label}: {result.error}")
+            progress.errors.append(f"{label}: {result.error}")
             return
         data = result.data
     else:

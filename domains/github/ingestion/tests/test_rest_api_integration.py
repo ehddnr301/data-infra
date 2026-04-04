@@ -242,6 +242,10 @@ class TestDagIntegrationTests:
         dag = dagbag.dags["github_rest_api_hourly"]
         task_ids = {t.task_id for t in dag.tasks}
         expected = {
+            "resolve_run_ds",
+            "resolve_run_hour",
+            "resolve_target_hour_start",
+            "resolve_rest_fetch_flags",
             "rest_fetch",
             "validate",
             "upload_r2",
@@ -254,6 +258,25 @@ class TestDagIntegrationTests:
             "cleanup",
         }
         assert expected.issubset(task_ids), f"누락: {expected - task_ids}"
+
+    @pytest.mark.skipif(
+        not __import__("importlib").util.find_spec("airflow"),
+        reason="Airflow not installed",
+    )
+    def test_hourly_dag_rest_fetch_command_templates_target_hour(self) -> None:
+        """rest_fetch는 대상 시간 시작값과 backfill 플래그 템플릿을 포함한다."""
+        from airflow.models import DagBag
+        from pathlib import Path
+
+        dag_dir = Path(__file__).resolve().parent.parent / "dags"
+        dagbag = DagBag(dag_folder=str(dag_dir), include_examples=False)
+        dag = dagbag.dags["github_rest_api_hourly"]
+
+        rest_fetch = dag.task_dict["rest_fetch"]
+        command = rest_fetch.bash_command
+
+        assert "--target-hour-start {{ ti.xcom_pull(task_ids='resolve_target_hour_start') }}" in command
+        assert "{{ ti.xcom_pull(task_ids='resolve_rest_fetch_flags') }}" in command
 
     @pytest.mark.skipif(
         not __import__("importlib").util.find_spec("airflow"),

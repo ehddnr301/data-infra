@@ -13,6 +13,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -76,7 +77,11 @@ class RestApiCollector:
         self._api_calls = 0
 
     def collect_all(
-        self, *, backfill: bool = False,
+        self,
+        *,
+        backfill: bool = False,
+        target_start: datetime | None = None,
+        target_end: datetime | None = None,
     ) -> tuple[list[GitHubEvent], RestApiCollectionSummary]:
         """모든 target_orgs에서 이벤트를 수집한다.
 
@@ -91,7 +96,12 @@ class RestApiCollector:
         all_raw_events: list[dict[str, Any]] = []
 
         for org in self._config.target_orgs:
-            result = self._collect_org(org, backfill=backfill)
+            result = self._collect_org(
+                org,
+                backfill=backfill,
+                target_start=target_start,
+                target_end=target_end,
+            )
             summary.results.append(result)
             all_raw_events.extend(result.events)
 
@@ -116,7 +126,12 @@ class RestApiCollector:
         return normalized, summary
 
     def _collect_org(
-        self, org: str, *, backfill: bool = False,
+        self,
+        org: str,
+        *,
+        backfill: bool = False,
+        target_start: datetime | None = None,
+        target_end: datetime | None = None,
     ) -> CollectionResult:
         """단일 org의 이벤트를 수집한다."""
         result = CollectionResult(org=org)
@@ -159,12 +174,40 @@ class RestApiCollector:
             result.events.extend(repo_events)
             result.new_events += len(repo_events)
 
+        if target_start is not None and target_end is not None:
+            result.events = [
+                event
+                for event in result.events
+                if self._event_in_window(event, target_start=target_start, target_end=target_end)
+            ]
+            result.new_events = len(result.events)
+
         logger.info(
             "Org %s: collected %d events (org=%d, repo_supplement=%s, api_calls=%d)",
             org, len(result.events), len(org_events),
             result.repo_supplement, result.api_calls,
         )
         return result
+
+    @staticmethod
+    def _event_in_window(
+        event: dict[str, Any],
+        *,
+        target_start: datetime,
+        target_end: datetime,
+    ) -> bool:
+        created_at_raw = event.get("created_at")
+        if not isinstance(created_at_raw, str):
+            return False
+
+        normalized = created_at_raw[:-1] + "+00:00" if created_at_raw.endswith("Z") else created_at_raw
+        try:
+            created_at = datetime.fromisoformat(normalized)
+        except ValueError:
+            logger.warning("Failed to parse event created_at: %s", created_at_raw)
+            return False
+
+        return target_start <= created_at < target_end
 
     @staticmethod
     def _should_supplement_repos(

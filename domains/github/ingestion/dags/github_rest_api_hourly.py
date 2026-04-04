@@ -95,10 +95,32 @@ def github_rest_api_hourly():
         anchor = _resolve_target_hour_anchor(**context)
         return anchor.strftime("%H")
 
+    @task(task_id="resolve_target_hour_start")
+    def resolve_target_hour_start(**context) -> str:
+        anchor = _resolve_target_hour_anchor(**context)
+        return anchor.start_of("hour").to_iso8601_string()
+
+    @task(task_id="resolve_rest_fetch_flags")
+    def resolve_rest_fetch_flags(**context) -> str:
+        dag_run = context.get("dag_run")
+        conf = getattr(dag_run, "conf", None) or {}
+        if conf.get("rest_backfill") is True:
+            return "--backfill"
+        if conf.get("rest_backfill") is False:
+            return ""
+
+        anchor = _resolve_target_hour_anchor(**context).start_of("hour")
+        latest_incremental_hour = pendulum.now("UTC").start_of("hour").subtract(hours=1)
+        return "--backfill" if anchor < latest_incremental_hour else ""
+
     run_ds_template = "{{ ti.xcom_pull(task_ids='resolve_run_ds') }}"
     run_hour_template = "{{ ti.xcom_pull(task_ids='resolve_run_hour') }}"
+    target_hour_start_template = "{{ ti.xcom_pull(task_ids='resolve_target_hour_start') }}"
+    rest_fetch_flags_template = "{{ ti.xcom_pull(task_ids='resolve_rest_fetch_flags') }}"
     run_ds = resolve_run_ds()
     run_hour = resolve_run_hour()
+    target_hour_start = resolve_target_hour_start()
+    rest_fetch_flags = resolve_rest_fetch_flags()
 
     # ── Task 1: rest_fetch (REST API 이벤트 수집) ──
     rest_fetch = BashOperator(
@@ -106,6 +128,8 @@ def github_rest_api_hourly():
         bash_command=(
             "gharchive-etl rest-fetch "
             f"--output-jsonl {DATA_DIR}/{run_ds_template}-{run_hour_template}.jsonl "
+            f"--target-hour-start {target_hour_start_template} "
+            f"{rest_fetch_flags_template} "
             f"--config {CONFIG_PATH} "
             "--json-log"
         ),
@@ -272,7 +296,7 @@ def github_rest_api_hourly():
     # rest_fetch → validate → [upload_r2, upload_d1]
     # upload_d1 → enrich_details → quality_check → should_run_daily_sync → sync_catalog → daily_summary → cleanup
     # upload_r2 → cleanup
-    [run_ds, run_hour] >> rest_fetch
+    [run_ds, run_hour, target_hour_start, rest_fetch_flags] >> rest_fetch
     rest_fetch >> validate_result >> [upload_r2, upload_d1]
     (
         upload_d1

@@ -50,6 +50,7 @@ class TestEnrichCli:
     def test_dry_run(self, runner: CliRunner, config_file: Path) -> None:
         """--dry-run 플래그 동작 확인."""
         with (
+            patch("gharchive_etl.cli._validate_d1_auth"),
             patch("gharchive_etl.github_api.GitHubApiClient") as mock_cls,
             patch("gharchive_etl.enrichment.enrich_priority_1") as mock_p1,
             patch("gharchive_etl.enrichment.enrich_priority_2") as mock_p2,
@@ -73,6 +74,7 @@ class TestEnrichCli:
     def test_priority_filter(self, runner: CliRunner, config_file: Path) -> None:
         """--priority 1 → P1만 실행."""
         with (
+            patch("gharchive_etl.cli._validate_d1_auth"),
             patch("gharchive_etl.github_api.GitHubApiClient") as mock_cls,
             patch("gharchive_etl.enrichment.enrich_priority_1") as mock_p1,
             patch("gharchive_etl.enrichment.enrich_priority_2") as mock_p2,
@@ -97,6 +99,7 @@ class TestEnrichCli:
     def test_date_filter(self, runner: CliRunner, config_file: Path) -> None:
         """--date 옵션이 base_date로 전달된다."""
         with (
+            patch("gharchive_etl.cli._validate_d1_auth"),
             patch("gharchive_etl.github_api.GitHubApiClient") as mock_cls,
             patch("gharchive_etl.enrichment.enrich_priority_1") as mock_p1,
             patch("gharchive_etl.enrichment.enrich_priority_2") as mock_p2,

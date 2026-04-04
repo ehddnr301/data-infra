@@ -191,7 +191,8 @@ class TestEnrichPriority1:
         )
 
         results = enrich_priority_1(mock_api, mock_app_config)
-        assert results[0].failed == 1
+        assert results[0].skipped == 1
+        assert results[0].failed == 0
         assert results[0].completed == 0
 
     @patch("gharchive_etl.enrichment.load_enriched_keys")

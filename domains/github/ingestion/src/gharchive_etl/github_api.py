@@ -13,6 +13,7 @@ import os
 import random
 import re
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -480,7 +481,8 @@ class GitHubApiClient:
 
     def fetch_wiki_page(self, owner: str, repo: str, page_name: str) -> GitHubApiResult:
         """raw.githubusercontent.com에서 위키 페이지를 가져온다."""
-        wiki_url = f"https://raw.githubusercontent.com/wiki/{owner}/{repo}/{page_name}.md"
+        encoded_page = urllib.parse.quote(page_name)
+        wiki_url = f"https://raw.githubusercontent.com/wiki/{owner}/{repo}/{encoded_page}.md"
         try:
             resp = httpx.get(wiki_url, timeout=self._config.request_timeout_sec)
             if resp.status_code == 200:

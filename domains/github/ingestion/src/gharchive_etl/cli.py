@@ -10,7 +10,7 @@ import os
 import sys
 from dataclasses import asdict
 from datetime import date as date_type
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import click
@@ -45,6 +45,27 @@ def _date_range(start: date_type, end: date_type) -> list[date_type]:
     """시작일~종료일 범위의 날짜 리스트를 반환한다."""
     days = (end - start).days + 1
     return [start + timedelta(days=i) for i in range(days)]
+
+
+def _parse_iso_datetime(value: str) -> datetime:
+    """ISO 8601 datetime 문자열을 UTC aware datetime으로 파싱한다."""
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise click.BadParameter(
+            f"datetime 형식이 올바르지 않습니다: {value} (예: 2026-04-01T12:00:00Z)"
+        ) from exc
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+
+    return parsed
 
 
 @click.group()
@@ -679,6 +700,13 @@ def enrich(
         click.echo(f"[enrich] {token_var} 미설정 — enrichment 스킵")
         return
 
+    # D1 인증 검증
+    try:
+        _validate_d1_auth(config.d1)
+    except RuntimeError as exc:
+        click.echo(f"D1 auth error: {exc}", err=True)
+        sys.exit(1)
+
     # wrangler 설치 확인 (dry-run이 아닌 경우)
     if not dry_run:
         try:
@@ -773,6 +801,11 @@ def enrich(
     default=False,
     help="백필 모드: ETag 무시, 모든 org에서 repo 보충 강제 실행",
 )
+@click.option(
+    "--target-hour-start",
+    default=None,
+    help="이 시각(UTC)부터 1시간 구간의 이벤트만 수집 (예: 2026-04-01T12:00:00Z)",
+)
 @click.option("--dry-run", is_flag=True, default=False, help="시뮬레이션 모드")
 @click.option(
     "--config",
@@ -785,6 +818,7 @@ def enrich(
 def rest_fetch(
     output_jsonl: Path,
     backfill: bool,
+    target_hour_start: str | None,
     dry_run: bool,
     config_path: Path | None,
     json_log: bool,
@@ -807,6 +841,14 @@ def rest_fetch(
     if dry_run:
         click.echo("[rest-fetch] DRY RUN 모드")
 
+    target_start = _parse_iso_datetime(target_hour_start) if target_hour_start else None
+    target_end = target_start + timedelta(hours=1) if target_start else None
+    if target_start is not None:
+        click.echo(
+            "[rest-fetch] target window: "
+            f"{target_start.isoformat()} <= created_at < {target_end.isoformat()}"
+        )
+
     try:
         api = GitHubApiClient(config.github_api)
     except RuntimeError as exc:
@@ -817,7 +859,11 @@ def rest_fetch(
         collector = RestApiCollector(api, config)
         click.echo(f"[rest-fetch] collecting events from {len(config.target_orgs)} orgs...")
         start_time = _time.time()
-        events, summary = collector.collect_all(backfill=backfill)
+        events, summary = collector.collect_all(
+            backfill=backfill,
+            target_start=target_start,
+            target_end=target_end,
+        )
 
         elapsed = _time.time() - start_time
         click.echo(
