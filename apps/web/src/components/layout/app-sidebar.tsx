@@ -1,6 +1,14 @@
 import { Sidebar } from '@/components/ui/sidebar'
 import { Link } from '@tanstack/react-router'
-import { BookOpen, Github, Info, LayoutDashboard, MessageSquare, Store } from 'lucide-react'
+import {
+  BookOpen,
+  Database,
+  Github,
+  Info,
+  LayoutDashboard,
+  MessageSquare,
+  Store,
+} from 'lucide-react'
 
 type AppSidebarProps = {
   className?: string
@@ -44,6 +52,15 @@ export function AppSidebar({ className, onNavigate }: AppSidebarProps) {
         >
           <MessageSquare className="h-4 w-4" />
           Discord hub
+        </Link>
+        <Link
+          to="/domains/$domainKey"
+          params={{ domainKey: 'pseudolab' }}
+          className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-black/5"
+          onClick={onNavigate}
+        >
+          <Database className="h-4 w-4" />
+          PseudoLab hub
         </Link>
         <Link
           to="/glossary"

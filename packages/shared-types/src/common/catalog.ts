@@ -1,6 +1,6 @@
 import type { IsoDateTime, JsonText } from './scalars'
 
-export const DOMAIN_NAMES = ['github', 'discord', 'linkedin', 'members'] as const
+export const DOMAIN_NAMES = ['github', 'discord', 'linkedin', 'members', 'pseudolab'] as const
 export type DomainName = (typeof DOMAIN_NAMES)[number]
 
 export const MARKETPLACE_DOMAIN_LABELS: Record<DomainName, string> = {
@@ -8,6 +8,7 @@ export const MARKETPLACE_DOMAIN_LABELS: Record<DomainName, string> = {
   discord: 'Discord',
   linkedin: 'LinkedIn',
   members: 'Members',
+  pseudolab: 'PseudoLab',
 }
 
 export const MARKETPLACE_DOMAIN_DESCRIPTIONS: Record<DomainName, string> = {
@@ -17,6 +18,8 @@ export const MARKETPLACE_DOMAIN_DESCRIPTIONS: Record<DomainName, string> = {
     'Privacy-aware Discord Bot/API batches for community messages and collector health, focused on public study channels and excluding DMs.',
   linkedin: 'Professional network datasets reserved for future marketplace expansion.',
   members: 'Member relationship datasets reserved for future marketplace expansion.',
+  pseudolab:
+    'PseudoLab Supabase 운영 데이터의 daily snapshot/incremental 적재. 프로젝트, 이벤트, 사용자 프로필, 커뮤니티 활동 등 79개 테이블.',
 }
 
 export function isDomainName(value: string): value is DomainName {

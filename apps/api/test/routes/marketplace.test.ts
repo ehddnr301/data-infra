@@ -79,7 +79,7 @@ const MarketplaceListingDetailSchema = MarketplaceListingSummarySchema.extend({
 })
 
 const MarketplaceDomainSummarySchema = z.object({
-  key: z.enum(['github', 'discord', 'linkedin', 'members']),
+  key: z.enum(['github', 'discord', 'linkedin', 'members', 'pseudolab']),
   label: z.string(),
   description: z.string(),
   listing_count: z.number(),

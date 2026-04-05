@@ -6,7 +6,7 @@ import hashlib
 import hmac
 from typing import Any
 
-# 24개 테이블, 53개 칼럼 PII 매핑
+# 24개 테이블, 48개 칼럼 PII 매핑
 PII_COLUMNS: dict[str, frozenset[str]] = {
     "email_verification_codes": frozenset({"email", "code"}),
     "event_cards": frozenset({"user_email"}),

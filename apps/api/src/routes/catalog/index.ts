@@ -22,7 +22,7 @@ const DatasetDomainQuerySchema = z
   .string()
   .optional()
   .transform((value) => value?.trim().toLowerCase())
-  .pipe(z.enum(['github', 'discord', 'linkedin', 'members']).optional())
+  .pipe(z.enum(['github', 'discord', 'linkedin', 'members', 'pseudolab']).optional())
 
 const DatasetQuerySchema = z.object({
   domain: DatasetDomainQuerySchema,
@@ -33,7 +33,7 @@ const DatasetQuerySchema = z.object({
 const UUID_V7_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 const GlossaryQuerySchema = z.object({
-  domain: z.enum(['github', 'discord', 'linkedin', 'members']).optional(),
+  domain: z.enum(['github', 'discord', 'linkedin', 'members', 'pseudolab']).optional(),
   q: z.string().trim().min(1).optional(),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().max(100).optional(),
@@ -44,7 +44,7 @@ const GlossaryIdParamSchema = z.object({
 })
 
 const GlossaryCreateBodySchema = z.object({
-  domain: z.enum(['github', 'discord', 'linkedin', 'members']),
+  domain: z.enum(['github', 'discord', 'linkedin', 'members', 'pseudolab']),
   term: z.string().trim().min(1).max(120),
   definition: z.string().trim().min(1),
   related_terms: z
@@ -85,7 +85,7 @@ const PreviewQuerySchema = z.object({
 const PREVIEW_CACHE_TTL_SECONDS = 86_400
 
 const DATASET_ID_REGEX = /^[\w.-]+$/
-const DomainEnum = z.enum(['github', 'discord', 'linkedin', 'members'])
+const DomainEnum = z.enum(['github', 'discord', 'linkedin', 'members', 'pseudolab'])
 
 const LineageParamSchema = z.object({
   datasetId: z.string().min(1).max(255).regex(DATASET_ID_REGEX, 'datasetId has invalid format'),

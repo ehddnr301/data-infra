@@ -542,10 +542,12 @@ def enrich_priority_3(
                 continue
 
         result = api.fetch_wiki_page(owner, repo, page_name)
-        if result.skipped or result.error:
+        if result.skipped:
+            progress.skipped += 1
+            continue
+        if result.error:
             progress.failed += 1
-            if result.error:
-                progress.errors.append(f"{label}: {result.error}")
+            progress.errors.append(f"{label}: {result.error}")
             continue
 
         content = result.data.get("content", "") if result.data else ""

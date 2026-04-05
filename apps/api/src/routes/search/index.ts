@@ -24,7 +24,7 @@ const SearchQuerySchema = z.object({
       message: 'q must be <= 48 bytes (UTF-8)',
     }),
   type: z.enum(['all', 'dataset', 'column', 'glossary']).optional().default('all'),
-  domain: z.enum(['github', 'discord', 'linkedin', 'members']).optional(),
+  domain: z.enum(['github', 'discord', 'linkedin', 'members', 'pseudolab']).optional(),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().max(100).optional(),
 })

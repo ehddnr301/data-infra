@@ -3,7 +3,16 @@ import { Input } from '@/components/ui/input'
 import { NavigationMenu } from '@/components/ui/navigation-menu'
 import { useRecentSearches } from '@/hooks/use-recent-searches'
 import { Link } from '@tanstack/react-router'
-import { Github, Info, LayoutDashboard, Menu, MessageSquare, Search, Store } from 'lucide-react'
+import {
+  Database,
+  Github,
+  Info,
+  LayoutDashboard,
+  Menu,
+  MessageSquare,
+  Search,
+  Store,
+} from 'lucide-react'
 import { useState } from 'react'
 
 type AppHeaderProps = {
@@ -48,6 +57,14 @@ export function AppHeader({ onOpenSidebar }: AppHeaderProps) {
           >
             <MessageSquare className="h-4 w-4" />
             Discord hub
+          </Link>
+          <Link
+            to="/domains/$domainKey"
+            params={{ domainKey: 'pseudolab' }}
+            className="inline-flex items-center gap-1 px-2 py-1 text-sm"
+          >
+            <Database className="h-4 w-4" />
+            PseudoLab hub
           </Link>
           <Link to="/about" className="inline-flex items-center gap-1 px-2 py-1 text-sm">
             <Info className="h-4 w-4" />
