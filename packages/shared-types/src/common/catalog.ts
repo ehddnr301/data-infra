@@ -363,3 +363,48 @@ export type MarketplaceDomainSummary = {
 export type MarketplaceDomainDetail = MarketplaceDomainSummary & {
   listings: MarketplaceListingSummary[]
 }
+
+// --- AI Manifest ---
+
+export type AiManifestEntry = {
+  dataset_id: string
+  domain: DomainName
+  name: string
+  purpose: string | null
+  column_count: number
+  row_count: number
+  freshness: string | null
+  has_pii: boolean
+}
+
+// --- Query History ---
+
+export type QueryHistoryEntry = {
+  id: string
+  user_email: string
+  user_name: string | null
+  executed_sql: string
+  row_count: number | null
+  execution_ms: number | null
+  status: 'success' | 'error'
+  error_message: string | null
+  created_at: string
+}
+
+// --- Dataset Comments ---
+
+export type CommentCategory = 'limitation' | 'purpose' | 'usage'
+export type CommentSource = 'human' | 'ai-auto' | 'ai-assisted'
+
+export type DatasetComment = {
+  id: string
+  dataset_id: string
+  user_email: string
+  user_name: string | null
+  category: CommentCategory
+  content: string
+  source: CommentSource
+  source_query_ids: string[]
+  created_at: string
+  updated_at: string | null
+}

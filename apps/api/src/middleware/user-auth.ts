@@ -1,19 +1,12 @@
 import type { Env } from '@pseudolab/shared-types'
 import type { Context, Next } from 'hono'
 import { AppError } from '../lib/errors'
+import { extractBearerToken } from './internal-auth'
 
-const BEARER_PREFIX = 'Bearer '
+export type AuthUser = { email: string; name: string }
+export type AuthEnv = { Bindings: Env; Variables: { user: AuthUser } }
 
-export function extractBearerToken(authorization: string | undefined): string | null {
-  if (!authorization || !authorization.startsWith(BEARER_PREFIX)) {
-    return null
-  }
-
-  const token = authorization.slice(BEARER_PREFIX.length).trim()
-  return token.length > 0 ? token : null
-}
-
-export async function requireInternalBearer(c: Context<{ Bindings: Env }>, next: Next) {
+export async function requireUserAuth(c: Context<AuthEnv>, next: Next) {
   const expectedToken = c.env.INTERNAL_API_TOKEN?.trim()
   if (!expectedToken) {
     throw new AppError(
@@ -34,5 +27,13 @@ export async function requireInternalBearer(c: Context<{ Bindings: Env }>, next:
     )
   }
 
+  const email = c.req.header('X-User-Email')?.trim()
+  if (!email) {
+    throw new AppError(400, 'Bad Request', '/errors/bad-request', 'X-User-Email header is required')
+  }
+
+  const name = c.req.header('X-User-Name')?.trim() ?? ''
+
+  c.set('user', { email, name })
   await next()
 }

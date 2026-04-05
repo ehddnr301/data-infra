@@ -33,6 +33,10 @@ export function validationError(detail?: string): AppError {
   return new AppError(400, 'Validation Error', '/errors/validation', detail)
 }
 
+export function forbidden(detail?: string): AppError {
+  return new AppError(403, 'Forbidden', '/errors/forbidden', detail)
+}
+
 export function internal(detail?: string): AppError {
   return new AppError(500, 'Internal Server Error', '/errors/internal', detail)
 }
