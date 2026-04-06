@@ -2,7 +2,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import type { MarketplaceListingDetail } from '@pseudolab/shared-types'
-import { BookOpen, ExternalLink } from 'lucide-react'
+import { ExternalLink } from 'lucide-react'
 
 function formatDate(iso: string | null): string | null {
   if (!iso) {
@@ -46,15 +46,7 @@ export function ListingHero({ listing }: { listing: MarketplaceListingDetail }) 
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {listing.documentation_url && (
-          <a href={listing.documentation_url}>
-            <Button type="button" className="gap-2">
-              <BookOpen className="h-4 w-4" />
-              Catalog API 보기
-            </Button>
-          </a>
-        )}
-        {listing.owner.contact_email && (
+{listing.owner.contact_email && (
           <a href={`mailto:${listing.owner.contact_email}`}>
             <Button type="button" variant="outline" className="gap-2">
               <ExternalLink className="h-4 w-4" />

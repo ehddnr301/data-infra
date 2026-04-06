@@ -1,3 +1,4 @@
+import { CommentsSection } from '@/components/comments/comments-section'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorCard } from '@/components/error-card'
 import { LineageViewer } from '@/components/lineage/lineage-viewer'
@@ -325,6 +326,8 @@ export function ListingDetailPage() {
             <EmptyState title="연관 listing이 없습니다." />
           )}
         </Card>
+
+        <CommentsSection datasetId={listing.dataset.id} />
       </div>
     </section>
   )

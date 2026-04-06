@@ -7,6 +7,7 @@ import { GlossaryDetailPage } from '@/routes/glossary/$termId'
 import { GlossaryFormPage } from '@/routes/glossary/form'
 import { ListingsPage } from '@/routes/listings'
 import { ListingDetailPage } from '@/routes/listings/$domain/$listingSlug'
+import { QueryDashboardPage } from '@/routes/query'
 import { SearchPage } from '@/routes/search'
 import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 
@@ -70,6 +71,12 @@ const listingDetailRoute = createRoute({
   component: ListingDetailPage,
 })
 
+const queryRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/query',
+  component: QueryDashboardPage,
+})
+
 const domainDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/domains/$domainKey',
@@ -84,6 +91,7 @@ const routeTree = rootRoute.addChildren([
   glossaryDetailRoute,
   glossaryEditRoute,
   searchRoute,
+  queryRoute,
   listingsRoute,
   listingDetailRoute,
   domainDetailRoute,

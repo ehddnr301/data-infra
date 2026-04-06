@@ -38,6 +38,10 @@ vi.mock('@/hooks/use-lineage', () => ({
   useLineage: vi.fn(),
 }))
 
+vi.mock('@/components/comments/comments-section', () => ({
+  CommentsSection: () => <div>comments-section</div>,
+}))
+
 import { useColumns, useDatasetPreview } from '@/hooks/use-catalog'
 import { useLineage } from '@/hooks/use-lineage'
 import { useListing } from '@/hooks/use-marketplace'

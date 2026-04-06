@@ -24,6 +24,20 @@ export function resolveApiBase(
 
 const API_BASE = resolveApiBase()
 
+let authHeaders: Record<string, string> = {}
+
+export function setAuthConfig(token: string, email: string, name: string) {
+  authHeaders = {
+    Authorization: `Bearer ${token}`,
+    'X-User-Email': email,
+    'X-User-Name': name,
+  }
+}
+
+export function clearAuthConfig() {
+  authHeaders = {}
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -51,7 +65,9 @@ export async function apiGet<T>(path: string, options?: RequestOptions): Promise
     }
   }
 
-  const res = await fetch(url.toString())
+  const res = await fetch(url.toString(), {
+    headers: { ...authHeaders },
+  })
 
   if (!res.ok) {
     const body = await res.json().catch(() => null)
@@ -71,6 +87,7 @@ async function requestWithBody<T>(
     method,
     headers: {
       'Content-Type': 'application/json',
+      ...authHeaders,
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
   })

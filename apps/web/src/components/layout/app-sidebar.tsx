@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   MessageSquare,
   Store,
+  Terminal,
 } from 'lucide-react'
 
 type AppSidebarProps = {
@@ -61,6 +62,14 @@ export function AppSidebar({ className, onNavigate }: AppSidebarProps) {
         >
           <Database className="h-4 w-4" />
           PseudoLab hub
+        </Link>
+        <Link
+          to="/query"
+          className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-black/5"
+          onClick={onNavigate}
+        >
+          <Terminal className="h-4 w-4" />
+          SQL 쿼리
         </Link>
         <Link
           to="/glossary"

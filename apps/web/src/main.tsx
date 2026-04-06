@@ -1,3 +1,4 @@
+import { AuthProvider } from '@/lib/auth-context'
 import { queryClient } from '@/lib/query-client'
 import { router } from '@/router'
 import { QueryClientProvider } from '@tanstack/react-query'
@@ -14,8 +15,10 @@ if (!rootElement) {
 
 createRoot(rootElement).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>
+    <AuthProvider>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    </AuthProvider>
   </StrictMode>,
 )
