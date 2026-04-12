@@ -11,9 +11,12 @@ import { useAuth } from '@/lib/auth-context'
 import { LogOut, Play, Terminal } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
 
+const LIMIT_OPTIONS = [10, 25, 50, 100] as const
+
 export function QueryDashboardPage() {
   const { isAuthenticated, auth, logout } = useAuth()
   const [sqlValue, setSqlValue] = useState('')
+  const [rowLimit, setRowLimit] = useState<number>(100)
   const mutation = useExecuteQuery()
   const { data: manifestData } = useManifest()
 
@@ -28,10 +31,11 @@ export function QueryDashboardPage() {
 
   const handleExecute = useCallback(() => {
     const trimmed = sqlValue.trim()
-    if (trimmed) {
-      mutation.mutate(trimmed)
-    }
-  }, [sqlValue, mutation])
+    if (!trimmed) return
+    const hasLimit = /\bLIMIT\s+\d+\s*$/i.test(trimmed)
+    const finalSql = hasLimit ? trimmed : `${trimmed} LIMIT ${rowLimit}`
+    mutation.mutate(finalSql)
+  }, [sqlValue, rowLimit, mutation])
 
   const handleTableClick = useCallback(
     (tableName: string) => {
@@ -88,6 +92,17 @@ export function QueryDashboardPage() {
                 <Play className="mr-1 h-4 w-4" />
                 {mutation.isPending ? '실행 중...' : '실행'}
               </Button>
+              <select
+                value={rowLimit}
+                onChange={(e) => setRowLimit(Number(e.target.value))}
+                className="rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
+              >
+                {LIMIT_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {n}행
+                  </option>
+                ))}
+              </select>
               <span className="text-xs text-[var(--muted-foreground)]">Ctrl+Enter로 실행</span>
             </div>
           </div>

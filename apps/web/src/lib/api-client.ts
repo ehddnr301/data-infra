@@ -30,7 +30,7 @@ export function setAuthConfig(token: string, email: string, name: string) {
   authHeaders = {
     Authorization: `Bearer ${token}`,
     'X-User-Email': email,
-    'X-User-Name': name,
+    'X-User-Name': encodeURIComponent(name),
   }
 }
 

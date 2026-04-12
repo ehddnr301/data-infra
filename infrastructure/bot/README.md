@@ -107,6 +107,7 @@ After app install, fill `infrastructure/bot/.env` with:
    - `https://<clawbot_host>/slack/command`
 4. Enable Interactivity and set request URL:
    - `https://<clawbot_host>/slack/interactive`
+   - Options Load URL: `https://<clawbot_host>/slack/interactive` (dataset 검색 select 용)
 5. Install app to workspace and copy `SLACK_BOT_TOKEN`.
 6. Copy Signing Secret to `SLACK_SIGNING_SECRET`.
 7. Invite bot to `#clawbot-ops` and set channel id as `SLACK_CHANNEL_ID`.
@@ -116,6 +117,11 @@ After app install, fill `infrastructure/bot/.env` with:
 1. Copy `.env.example` to `.env` in `infrastructure/bot/`.
 2. Fill all required secrets.
 3. Keep `OPENCLAW_RUN_MODE=dry-run` and `OPENCLAW_WRITE_ENABLED=false` during pilot.
+
+### Slash UX behavior
+
+- `/clawbot plan` 호출 시 즉시 plan을 만들지 않고 Slack modal을 엽니다.
+- modal에서 dataset 선택 + 자연어 요청 입력 후 Submit 하면 plan 생성이 시작됩니다.
 
 ## 3. Runbook
 

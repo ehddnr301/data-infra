@@ -32,7 +32,8 @@ export async function requireUserAuth(c: Context<AuthEnv>, next: Next) {
     throw new AppError(400, 'Bad Request', '/errors/bad-request', 'X-User-Email header is required')
   }
 
-  const name = c.req.header('X-User-Name')?.trim() ?? ''
+  const rawName = c.req.header('X-User-Name')?.trim() ?? ''
+  const name = decodeURIComponent(rawName)
 
   c.set('user', { email, name })
   await next()

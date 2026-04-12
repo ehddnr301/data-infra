@@ -20,11 +20,17 @@ services:
       # DAG (서브디렉토리로 분리)
       - ../../domains/github/ingestion/dags:/opt/airflow/dags/github
       - ../../domains/discord/ingestion/dags:/opt/airflow/dags/discord
-      # 도메인별 데이터 + 설정
+      # 도메인별 데이터 + 설정 (+ 각 도메인 .env는 load_dotenv로 런타임 로딩)
       - ../../domains/github/ingestion/data:/opt/airflow/domains/github/ingestion/data
       - ../../domains/github/ingestion/config.yaml:/opt/airflow/domains/github/ingestion/config.yaml:ro
+      - ../../domains/github/ingestion/.env:/opt/airflow/domains/github/ingestion/.env:ro
       - ../../domains/discord/ingestion/data:/opt/airflow/domains/discord/ingestion/data
       - ../../domains/discord/ingestion/config.yaml:/opt/airflow/domains/discord/ingestion/config.yaml:ro
+      - ../../domains/discord/ingestion/.env:/opt/airflow/domains/discord/ingestion/.env:ro
+      # pseudolab domain
+      - ../../domains/pseudolab/ingestion/dags:/opt/airflow/dags/pseudolab
+      - ../../domains/pseudolab/ingestion/config.yaml:/opt/airflow/domains/pseudolab/ingestion/config.yaml:ro
+      - ../../domains/pseudolab/ingestion/.env:/opt/airflow/domains/pseudolab/ingestion/.env:ro
     env_file:
       - .env
     environment:
@@ -39,6 +45,7 @@ services:
       # 도메인 루트 경로 (DAG에서 참조)
       GITHUB_INGESTION_ROOT: /opt/airflow/domains/github/ingestion
       DISCORD_INGESTION_ROOT: /opt/airflow/domains/discord/ingestion
+      PSEUDOLAB_INGESTION_ROOT: /opt/airflow/domains/pseudolab/ingestion
     command: standalone
     restart: unless-stopped
 
