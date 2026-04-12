@@ -58,6 +58,10 @@ export interface RuntimeVars {
   ENVIRONMENT?: 'dev' | 'staging' | 'prod'
   LOG_LEVEL?: 'debug' | 'info' | 'warn' | 'error'
   INTERNAL_API_TOKEN?: string
+  GOOGLE_CLIENT_ID?: string
+  GOOGLE_CLIENT_SECRET?: string
+  JWT_SECRET?: string
+  FRONTEND_URL?: string
 }
 
 export type Env = CoreBindings & Partial<RuntimeVars>

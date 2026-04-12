@@ -4,6 +4,7 @@ import { corsMiddleware } from './middleware/cors'
 import { errorHandler, notFoundHandler } from './middleware/error-handler'
 import { loggerMiddleware } from './middleware/logger'
 import aiRouter from './routes/ai'
+import authRouter from './routes/auth'
 import catalogRouter from './routes/catalog'
 import commentsRouter from './routes/comments'
 import discordRouter from './routes/discord'
@@ -18,6 +19,7 @@ const app = new Hono<{ Bindings: Env }>().basePath('/api')
 app.use('*', corsMiddleware)
 app.use('*', loggerMiddleware)
 
+app.route('/auth', authRouter)
 app.route('/health', healthRouter)
 app.route('/github', githubRouter)
 app.route('/catalog', catalogRouter)

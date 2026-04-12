@@ -1,4 +1,5 @@
-import { DevLoginForm } from '@/components/auth/dev-login-form'
+import { LoginPage } from '@/components/auth/login-page'
+import { PendingScreen } from '@/components/auth/pending-screen'
 import { QueryHistoryPanel } from '@/components/query/query-history'
 import { QueryError, QueryResults } from '@/components/query/query-results'
 import { SqlEditor } from '@/components/query/sql-editor'
@@ -14,7 +15,7 @@ import { useCallback, useMemo, useState } from 'react'
 const LIMIT_OPTIONS = [10, 25, 50, 100] as const
 
 export function QueryDashboardPage() {
-  const { isAuthenticated, auth, logout } = useAuth()
+  const { isAuthenticated, isApproved, auth, logout } = useAuth()
   const [sqlValue, setSqlValue] = useState('')
   const [rowLimit, setRowLimit] = useState<number>(100)
   const mutation = useExecuteQuery()
@@ -50,7 +51,11 @@ export function QueryDashboardPage() {
   )
 
   if (!isAuthenticated) {
-    return <DevLoginForm />
+    return <LoginPage />
+  }
+
+  if (!isApproved) {
+    return <PendingScreen />
   }
 
   const result = mutation.data
