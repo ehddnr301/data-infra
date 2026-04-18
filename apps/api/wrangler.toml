@@ -29,3 +29,6 @@ migrations_dir = "../../domains/catalog/storage/migrations"
 binding = "CACHE"
 id = "9b50454f6eb6483cba84a41fbec19ce9"
 preview_id = "397782aa9e304aa3bf3a741fbc55fd87"
+
+[vars]
+FRONTEND_URL = "https://master.pseudolab-web.pages.dev"

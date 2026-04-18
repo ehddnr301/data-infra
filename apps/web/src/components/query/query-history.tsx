@@ -73,7 +73,7 @@ export function QueryHistoryPanel({ onSelectQuery }: QueryHistoryPanelProps) {
               key={entry.id}
               type="button"
               onClick={() => onSelectQuery(entry.executed_sql)}
-              className="w-full rounded-md border border-[var(--border)] p-2 text-left hover:bg-[var(--muted)]"
+              className="w-full min-w-0 overflow-hidden rounded-md border border-[var(--border)] p-2 text-left hover:bg-[var(--muted)]"
             >
               <div className="flex items-center gap-2">
                 <Badge

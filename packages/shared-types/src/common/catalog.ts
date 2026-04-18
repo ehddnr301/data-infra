@@ -370,6 +370,7 @@ export type AiManifestEntry = {
   dataset_id: string
   domain: DomainName
   name: string
+  table_name: string | null
   purpose: string | null
   column_count: number
   row_count: number

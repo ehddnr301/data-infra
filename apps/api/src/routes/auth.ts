@@ -1,14 +1,23 @@
 import type { Env } from '@pseudolab/shared-types'
 import { Hono } from 'hono'
-import { AppError, badRequest, internal } from '../lib/errors'
+import { AppError, badRequest, internal, notFound } from '../lib/errors'
 import { nanoid } from '../lib/id'
 import { signJwt, verifyJwt } from '../lib/jwt'
 import { extractBearerToken } from '../middleware/internal-auth'
+import type { AuthEnv } from '../middleware/user-auth'
+import { requireUserAuth } from '../middleware/user-auth'
 
 const authRouter = new Hono<{ Bindings: Env }>()
 
 const STATE_TTL = 600 // 10 minutes
 const CODE_TTL = 60 // 1 minute
+const PAT_PREFIX = 'plat_'
+
+async function hashToken(token: string): Promise<string> {
+  const data = new TextEncoder().encode(token)
+  const hash = await crypto.subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, '0')).join('')
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -101,7 +110,7 @@ authRouter.get('/google/callback', async (c) => {
   }
 
   // Consume the state (prevent replay)
-  await c.env.CACHE.put(`oauth_state:${state}`, '', { expirationTtl: 1 })
+  await c.env.CACHE.put(`oauth_state:${state}`, '', { expirationTtl: 60 })
 
   // Exchange code for tokens
   const clientId = c.env.GOOGLE_CLIENT_ID?.trim()
@@ -143,7 +152,9 @@ authRouter.get('/google/callback', async (c) => {
   const padded =
     payloadB64.replace(/-/g, '+').replace(/_/g, '/') +
     '=='.slice(0, (4 - (payloadB64.length % 4)) % 4)
-  const idPayload = JSON.parse(atob(padded)) as {
+  const binaryStr = atob(padded)
+  const bytes = Uint8Array.from(binaryStr, (c) => c.charCodeAt(0))
+  const idPayload = JSON.parse(new TextDecoder().decode(bytes)) as {
     email?: string
     name?: string
     picture?: string
@@ -176,8 +187,8 @@ authRouter.get('/google/callback', async (c) => {
 
   // Upsert user in D1
   await c.env.DB.prepare(
-    `INSERT INTO users (email, name, picture, last_login_at)
-     VALUES (?, ?, ?, datetime('now'))
+    `INSERT INTO users (email, name, picture, role, last_login_at)
+     VALUES (?, ?, ?, 'member', datetime('now'))
      ON CONFLICT(email) DO UPDATE SET
        name = excluded.name,
        picture = excluded.picture,
@@ -191,7 +202,7 @@ authRouter.get('/google/callback', async (c) => {
     .bind(email)
     .first<{ role: 'pending' | 'member' | 'admin' }>()
 
-  const role = user?.role ?? 'pending'
+  const role = user?.role ?? 'member'
 
   // Sign JWT
   const jwt = await signJwt({ email, name, role, picture }, jwtSecret)
@@ -236,7 +247,7 @@ authRouter.post('/exchange', async (c) => {
   }
 
   // Consume the code (prevent replay)
-  await c.env.CACHE.put(`auth_code:${code}`, '', { expirationTtl: 1 })
+  await c.env.CACHE.put(`auth_code:${code}`, '', { expirationTtl: 60 })
 
   const data = JSON.parse(stored) as { jwt: string; email: string; name: string; role: string }
 
@@ -300,5 +311,88 @@ authRouter.get('/me', async (c) => {
     },
   })
 })
+
+// ---------------------------------------------------------------------------
+// Personal API Tokens (PAT) — requires JWT auth
+// ---------------------------------------------------------------------------
+const tokenRouter = new Hono<AuthEnv>()
+tokenRouter.use('*', requireUserAuth)
+
+// POST /api/auth/tokens — Create a new PAT
+tokenRouter.post('/', async (c) => {
+  const user = c.get('user')
+  const body = (await c.req.json().catch(() => null)) as {
+    name?: string
+    display_name?: string
+  } | null
+  const tokenName = body?.name?.trim()
+  if (!tokenName) {
+    throw badRequest('Token name is required')
+  }
+  const displayName = body?.display_name?.trim() || null
+
+  const id = nanoid()
+  const rawToken = `${PAT_PREFIX}${nanoid(32)}`
+  const tokenHash = await hashToken(rawToken)
+  const tokenPrefix = rawToken.slice(0, 12)
+
+  await c.env.DB.prepare(
+    'INSERT INTO user_api_tokens (id, user_email, name, token_hash, token_prefix, display_name) VALUES (?, ?, ?, ?, ?, ?)',
+  )
+    .bind(id, user.email, tokenName, tokenHash, tokenPrefix, displayName)
+    .run()
+
+  return c.json({
+    success: true,
+    data: {
+      id,
+      name: tokenName,
+      display_name: displayName,
+      token: rawToken,
+      token_prefix: tokenPrefix,
+      created_at: new Date().toISOString(),
+    },
+  })
+})
+
+// GET /api/auth/tokens — List user's PATs (without full token)
+tokenRouter.get('/', async (c) => {
+  const user = c.get('user')
+  const rows = await c.env.DB.prepare(
+    'SELECT id, name, token_prefix, created_at, last_used_at FROM user_api_tokens WHERE user_email = ? ORDER BY created_at DESC',
+  )
+    .bind(user.email)
+    .all<{
+      id: string
+      name: string
+      token_prefix: string
+      created_at: string
+      last_used_at: string | null
+    }>()
+
+  return c.json({ success: true, data: rows.results })
+})
+
+// DELETE /api/auth/tokens/:id — Revoke a PAT
+tokenRouter.delete('/:id', async (c) => {
+  const user = c.get('user')
+  const tokenId = c.req.param('id')
+
+  const existing = await c.env.DB.prepare(
+    'SELECT id FROM user_api_tokens WHERE id = ? AND user_email = ?',
+  )
+    .bind(tokenId, user.email)
+    .first()
+
+  if (!existing) {
+    throw notFound('Token not found')
+  }
+
+  await c.env.DB.prepare('DELETE FROM user_api_tokens WHERE id = ?').bind(tokenId).run()
+
+  return c.json({ success: true })
+})
+
+authRouter.route('/tokens', tokenRouter)
 
 export default authRouter

@@ -1,5 +1,6 @@
 import { LoginPage } from '@/components/auth/login-page'
 import { PendingScreen } from '@/components/auth/pending-screen'
+import { TokenManager } from '@/components/auth/token-manager'
 import { QueryHistoryPanel } from '@/components/query/query-history'
 import { QueryError, QueryResults } from '@/components/query/query-results'
 import { SqlEditor } from '@/components/query/sql-editor'
@@ -83,7 +84,7 @@ export function QueryDashboardPage() {
         </Card>
 
         {/* Right: Editor + Results + History */}
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           {/* SQL Editor */}
           <div className="space-y-2">
             <SqlEditor
@@ -134,6 +135,9 @@ export function QueryDashboardPage() {
 
           {/* History */}
           <QueryHistoryPanel onSelectQuery={setSqlValue} />
+
+          {/* API Token Management */}
+          <TokenManager />
         </div>
       </div>
     </section>

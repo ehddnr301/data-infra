@@ -46,7 +46,7 @@ export function ListingHero({ listing }: { listing: MarketplaceListingDetail }) 
       </div>
 
       <div className="flex flex-wrap gap-2">
-{listing.owner.contact_email && (
+        {listing.owner.contact_email && (
           <a href={`mailto:${listing.owner.contact_email}`}>
             <Button type="button" variant="outline" className="gap-2">
               <ExternalLink className="h-4 w-4" />

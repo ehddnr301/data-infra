@@ -4,7 +4,7 @@ import type { AuthEnv } from '../../middleware/user-auth'
 import { requireUserAuth } from '../../middleware/user-auth'
 import { PREVIEW_SOURCE_BY_DATASET_ID } from '../catalog/preview-sources'
 
-const MANIFEST_CACHE_KEY = 'ai:manifest:v1'
+const MANIFEST_CACHE_KEY = 'ai:manifest:v2'
 const MANIFEST_CACHE_TTL = 3600 // 1 hour
 
 const aiRouter = new Hono<AuthEnv>()
@@ -70,10 +70,12 @@ aiRouter.get('/manifest', async (c) => {
   // 6. Assemble manifest
   const manifest: AiManifestEntry[] = datasetsResult.results.map((ds) => {
     const stats = rowFreshnessMap.get(ds.id)
+    const previewSource = PREVIEW_SOURCE_BY_DATASET_ID[ds.id]
     return {
       dataset_id: ds.id,
       domain: ds.domain,
       name: ds.name,
+      table_name: previewSource?.table ?? null,
       purpose: ds.purpose,
       column_count: colCountMap.get(ds.id) ?? 0,
       row_count: stats?.row_count ?? 0,

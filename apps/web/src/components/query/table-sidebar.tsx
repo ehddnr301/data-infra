@@ -86,12 +86,12 @@ export function TableSidebar({ onTableClick }: TableSidebarProps) {
                   <button
                     key={entry.dataset_id}
                     type="button"
-                    onClick={() => onTableClick?.(entry.name)}
+                    onClick={() => onTableClick?.(entry.table_name ?? entry.name)}
                     className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-[var(--muted)]"
                     title={entry.purpose ?? entry.name}
                   >
                     <Database className="h-3 w-3 shrink-0 text-[var(--muted-foreground)]" />
-                    <span className="truncate">{entry.name}</span>
+                    <span className="truncate">{entry.table_name ?? entry.name}</span>
                     {entry.has_pii && (
                       <ShieldAlert className="ml-auto h-3 w-3 shrink-0 text-amber-500" />
                     )}
