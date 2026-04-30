@@ -1,6 +1,6 @@
 # 운영 가이드
 
-> 기준일: 2026-02-18 | 상세 기술 레퍼런스: [`ops-reference.md`](ops-reference.md)
+> 기준일: 2026-03-01 | 상세 기술 레퍼런스: [`ops-reference.md`](ops-reference.md)
 
 ## 프로젝트 개요
 
@@ -16,6 +16,31 @@ gharchive.org → Python ETL (fetch/filter/transform) → R2(raw) + D1(14개 DL 
 - Airflow DAG: 매일 자동 수집/적재/정리 파이프라인
 - Catalog API: 데이터셋/컬럼 메타데이터 조회
 - Web UI: 데이터셋 검색/필터/상세 스키마 브라우저
+
+### 명령 실행 원칙 (필독)
+
+- Cloudflare 명령은 `pnpm exec wrangler ...` 또는 `npx wrangler ...`를 사용한다.
+- `pnpm deploy`는 pnpm 내장 명령이므로 Worker 배포 명령이 아니다.
+- `wrangler: command not found`가 나오면 글로벌 설치 대신 `pnpm exec wrangler ...`를 사용한다.
+- 리포 루트(`~/pseudolab-cloudflare`)에서 실행하는 것을 기본값으로 한다.
+
+### 10분 온보딩 (처음 온 운영자용)
+
+```bash
+# 1) 인증 확인
+pnpm exec wrangler whoami
+
+# 2) API 로컬 기동
+pnpm exec wrangler d1 migrations apply pseudolab-main --local --config apps/api/wrangler.toml
+pnpm --filter @pseudolab/api dev
+
+# 3) Web 로컬 기동 (새 터미널)
+pnpm --filter @pseudolab/web dev
+
+# 4) 접속 확인
+curl -i http://127.0.0.1:8787/api/health
+# 브라우저: http://localhost:5173/glossary
+```
 
 ---
 
@@ -163,6 +188,29 @@ Account ID가 운영 리소스와 일치하는지 확인.
 | KV (prod) | `pseudolab-cache` | `9b50454f6eb6483cba84a41fbec19ce9` |
 | KV (preview) | `pseudolab-cache-preview` | `397782aa9e304aa3bf3a741fbc55fd87` |
 
+### 2-1a. 운영 URL 식별 방법
+
+운영 URL은 placeholder(`<your-worker>`)를 수동 추측하지 말고, 아래 순서로 확인한다.
+
+```bash
+# Pages 프로젝트/도메인 확인
+pnpm exec wrangler pages project list
+
+# API Worker 배포 상태 확인
+pnpm exec wrangler deployments status --config apps/api/wrangler.toml
+
+# API Worker 배포 이력 확인
+pnpm exec wrangler deployments list --config apps/api/wrangler.toml
+
+# Pages 배포 이력 확인
+pnpm exec wrangler pages deployment list --project-name pseudolab-web
+```
+
+실무 규칙:
+- Web URL: `pnpm exec wrangler pages project list`의 `Project Domains` 값을 사용
+- API URL: API 배포 직후(`pnpm exec wrangler deploy ...`) 출력 또는 Dashboard의 `pseudolab-api` 도메인에서 확인
+- Dashboard 경로: Cloudflare Dashboard → Workers & Pages → `pseudolab-api` / `pseudolab-web`
+
 ### 2-2. 배포 절차
 
 **순서**: D1 마이그레이션 → API Worker 배포 → Web Pages 배포 (롤백은 역순)
@@ -172,7 +220,7 @@ Account ID가 운영 리소스와 일치하는지 확인.
 ```bash
 pnpm install && pnpm build && pnpm check   # 빌드/타입 통과
 pnpm test                                    # 테스트 통과
-pnpm wrangler whoami                        # 인증 확인
+pnpm exec wrangler whoami                   # 인증 확인
 cd infra && terraform output                # 바인딩 ID 일치 확인
 ```
 
@@ -180,7 +228,7 @@ cd infra && terraform output                # 바인딩 ID 일치 확인
 
 ```bash
 # ⚠️ 반드시 로컬 선검증 후 적용
-npx wrangler d1 migrations apply pseudolab-main --remote \
+pnpm exec wrangler d1 migrations apply pseudolab-main --remote \
   --config domains/catalog/storage/wrangler.toml
 ```
 
@@ -194,26 +242,45 @@ npx wrangler d1 migrations apply pseudolab-main --remote \
 
 ```bash
 pnpm --filter @pseudolab/api build
-npx wrangler deploy --config apps/api/wrangler.toml
+pnpm exec wrangler deploy --config apps/api/wrangler.toml
 ```
 
 **배포 후 확인**:
 ```bash
-curl -i https://<your-worker>.workers.dev/api/health          # → 200
-curl "https://<your-worker>.workers.dev/api/catalog/datasets"  # → JSON + pagination
+# 아래 URL은 실제 배포 결과에서 복사한 값으로 교체
+export API_BASE_URL="https://<your-worker>.workers.dev"
+
+curl -i "$API_BASE_URL/api/health"                              # → 200
+curl "$API_BASE_URL/api/catalog/datasets?page=1&pageSize=5"    # → JSON + pagination
+curl -i "$API_BASE_URL/api/catalog/datasets/non-existent"       # → 404 + problem+json
 ```
 
 #### Web Pages 배포
 
 ```bash
-VITE_API_URL=https://<your-worker>.workers.dev \
+# 프로젝트가 없으면 최초 1회 생성
+pnpm exec wrangler pages project create pseudolab-web --production-branch main
+
+# 이미 있으면 목록 확인
+pnpm exec wrangler pages project list
+
+# API URL을 주입해 빌드
+VITE_API_URL="$API_BASE_URL" \
   pnpm turbo build --filter=@pseudolab/web
-npx wrangler pages deploy apps/web/dist --project-name=pseudolab-web
+
+# Pages 배포
+pnpm exec wrangler pages deploy apps/web/dist --project-name=pseudolab-web
+
+# 최신 배포 URL 확인
+pnpm exec wrangler pages deployment list --project-name pseudolab-web
 ```
 
 **조심할 점**:
 - `VITE_API_URL`이 운영 Worker 주소와 일치해야 함
 - `apps/web/public/_redirects`에 `/* /index.html 200` 규칙 유지 (SPA fallback)
+- `ERR_PNPM_INVALID_DEPLOY_TARGET`가 나오면 `pnpm deploy`를 사용한 것이다. `pnpm exec wrangler deploy ...`로 재실행한다.
+- `wrangler: command not found`가 나오면 `pnpm exec wrangler ...` 또는 `npx wrangler ...`를 사용한다.
+- `The project you specified does not exist`가 나오면 `pages project create`를 먼저 실행한다.
 
 ### 2-3. ETL 운영 실행
 
@@ -291,6 +358,9 @@ terraform output  # 리소스 ID 확인
 |------|------|------|
 | API 502/503 | D1 바인딩 불일치 | `wrangler tail`로 로그 확인 → wrangler.toml vs terraform output 비교 |
 | Web에서 API 호출 실패 | CORS / URL 불일치 | `VITE_API_URL` 확인 |
+| `ERR_PNPM_INVALID_DEPLOY_TARGET` | `pnpm deploy` 오사용 | `pnpm exec wrangler deploy --config apps/api/wrangler.toml` 사용 |
+| `wrangler: command not found` | 글로벌 wrangler 미설치 | `pnpm exec wrangler ...` 사용 |
+| `The project you specified does not exist: pseudolab-web` | Pages 프로젝트 미생성 | `pnpm exec wrangler pages project create pseudolab-web --production-branch main` |
 | Pages 라우팅 404 | SPA fallback 누락 | `apps/web/public/_redirects` 파일 확인 |
 | ETL fetch 실패 | 네트워크/gharchive 이상 | `--no-json-log`로 재현, 시간대별 재실행 |
 | ETL upload 실패 | API 토큰 만료/미설정 | 환경변수 확인, `--dry-run`으로 사전 검증 |

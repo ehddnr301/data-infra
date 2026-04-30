@@ -55,3 +55,6 @@ domains/github/ingestion/data/rest-api/*.jsonl
 domains/github/ingestion/logs/*.log
 
 domains/discord/ingestion/data/**/*.jsonl
+
+.omx
+ticket-system

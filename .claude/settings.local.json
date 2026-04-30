@@ -29,7 +29,13 @@
       "Bash(pnpm wrangler d1 migrations apply:*)",
       "Bash(xargs:*)",
       "Bash(python -c:*)",
-      "mcp__plugin_oh-my-claudecode_t__state_clear"
+      "mcp__plugin_oh-my-claudecode_t__state_clear",
+      "WebFetch(domain:www.astronomer.io)",
+      "WebFetch(domain:airflow.apache.org)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:engineergatitu.medium.com)",
+      "WebFetch(domain:discord.com)",
+      "Bash(npx wrangler d1 execute:*)"
     ]
   }
 }

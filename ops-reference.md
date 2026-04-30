@@ -2,6 +2,16 @@
 
 > 이 문서는 [`ops.md`](ops.md)의 상세 기술 참조 문서입니다.
 
+## 0. 트러블슈팅 인덱스
+
+- 배포 명령/URL 확인: `## 7. Web 환경변수 및 배포 상세`
+- D1 상태 검증: `## 3. D1 검증 쿼리`
+- D1 수동 롤백: `## 4. D1 마이그레이션 롤백`
+- Airflow 운영 이슈: `## 5. Airflow DAG 상세`
+
+Cloudflare 명령은 `pnpm exec wrangler ...` 또는 `npx wrangler ...`를 사용한다.
+`pnpm deploy`는 pnpm 내장 명령이므로 Worker 배포 명령이 아니다.
+
 ---
 
 ## 1. ETL 모듈 상세 구성
@@ -421,13 +431,16 @@ pnpm check                           # 타입 체크
 
 ```bash
 # 터미널 1: D1 마이그레이션 + API 실행
-npx wrangler d1 migrations apply pseudolab-main --local \
-  --config domains/catalog/storage/wrangler.toml
+pnpm exec wrangler d1 migrations apply pseudolab-main --local \
+  --config apps/api/wrangler.toml
 pnpm --filter @pseudolab/api dev
 
 # 터미널 2: Web 실행
 pnpm --filter @pseudolab/web dev
 ```
+
+> 로컬 API 실행/검증 목적은 `apps/api/wrangler.toml` 기준을 권장한다.
+> 스키마 자체 점검/관리 쿼리 목적일 때만 `domains/catalog/storage/wrangler.toml` 기준으로 실행한다.
 
 ### API 엔드포인트 확인
 
@@ -494,3 +507,80 @@ curl -i "http://127.0.0.1:8787/api/catalog/datasets?pageSize=-1"
 | Root directory | `/` (모노레포 루트) |
 | Node.js version | `20` |
 | 환경변수 `VITE_API_URL` | `https://<your-worker>.workers.dev` |
+
+### 수동 배포 Runbook (Pages Direct Upload)
+
+```bash
+# 0) 인증 확인
+pnpm exec wrangler whoami
+
+# 1) API 배포
+pnpm --filter @pseudolab/api build
+pnpm exec wrangler deploy --config apps/api/wrangler.toml
+
+# 2) API URL 확보 (배포 로그 또는 Dashboard에서 복사)
+export API_BASE_URL="https://<your-worker>.workers.dev"
+
+# 3) Pages 프로젝트 확인/생성
+pnpm exec wrangler pages project list
+# 목록에 없을 때만 실행
+pnpm exec wrangler pages project create pseudolab-web --production-branch main
+
+# 4) Web 빌드 + 배포
+VITE_API_URL="$API_BASE_URL" pnpm turbo build --filter=@pseudolab/web
+pnpm exec wrangler pages deploy apps/web/dist --project-name pseudolab-web
+
+# 5) 배포 URL 확인
+pnpm exec wrangler pages deployment list --project-name pseudolab-web
+```
+
+### 운영 URL 찾는 방법 (실전)
+
+1. Web URL
+   - `pnpm exec wrangler pages project list`에서 `Project Domains` 확인
+2. API URL
+   - API 배포 직후 출력에서 workers.dev 주소 확인
+   - 또는 Dashboard -> Workers & Pages -> `pseudolab-api` -> Domains/Routes
+3. 최종 연동 검증
+
+```bash
+curl -i "$API_BASE_URL/api/health"
+curl "$API_BASE_URL/api/catalog/datasets?page=1&pageSize=5"
+```
+
+### 배포 중 자주 만나는 에러와 즉시 조치
+
+| 에러/증상 | 원인 | 즉시 조치 |
+|-----------|------|-----------|
+| `ERR_PNPM_INVALID_DEPLOY_TARGET` | `pnpm deploy` 오사용 | `pnpm exec wrangler deploy --config apps/api/wrangler.toml` 사용 |
+| `wrangler: command not found` | 글로벌 wrangler 미설치 | `pnpm exec wrangler ...` 또는 `npx wrangler ...` |
+| `The project you specified does not exist: pseudolab-web` | Pages 프로젝트 미생성 | `pnpm exec wrangler pages project create pseudolab-web --production-branch main` |
+| Web는 열리지만 API 호출 실패 | `VITE_API_URL` 불일치 | Worker URL 확인 후 `VITE_API_URL` 재주입 빌드/배포 |
+
+---
+
+## 8. OpenClaw always-on 운영 참고
+
+작업 디렉터리: `infrastructure/bot/`
+
+### 8.1 기본 운영 명령
+
+```bash
+docker compose -f infrastructure/bot/compose.yaml config
+docker compose -f infrastructure/bot/compose.yaml up -d
+docker compose -f infrastructure/bot/compose.yaml ps
+docker compose -f infrastructure/bot/compose.yaml logs -f clawbot
+```
+
+### 8.2 헬스 점검
+
+```bash
+curl -i http://127.0.0.1:30023/health
+curl -i http://127.0.0.1:30023/health/ready
+```
+
+### 8.3 장애 대응
+
+- `status=unhealthy`가 3분 이상 지속되면 `#clawbot-ops`에 즉시 알림
+- `OCW0901`가 10분 내 5건 이상이면 외부 연동(Slack/Catalog/Claude) 순서로 점검
+- 파일럿 단계에서는 `OPENCLAW_RUN_MODE=dry-run`, `OPENCLAW_WRITE_ENABLED=false` 유지

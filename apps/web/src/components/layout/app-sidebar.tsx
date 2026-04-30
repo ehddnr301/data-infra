@@ -7,6 +7,7 @@ import {
   Info,
   LayoutDashboard,
   MessageSquare,
+  MessagesSquare,
   Store,
   Terminal,
 } from 'lucide-react'
@@ -78,6 +79,14 @@ export function AppSidebar({ className, onNavigate }: AppSidebarProps) {
         >
           <BookOpen className="h-4 w-4" />
           용어집
+        </Link>
+        <Link
+          to="/discussions"
+          className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-black/5"
+          onClick={onNavigate}
+        >
+          <MessagesSquare className="h-4 w-4" />
+          토론
         </Link>
         <Link
           to="/about"

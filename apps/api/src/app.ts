@@ -8,6 +8,7 @@ import authRouter from './routes/auth'
 import catalogRouter from './routes/catalog'
 import commentsRouter from './routes/comments'
 import discordRouter from './routes/discord'
+import discussionsRouter from './routes/discussions'
 import githubRouter from './routes/github'
 import healthRouter from './routes/health'
 import marketplaceRouter from './routes/marketplace'
@@ -29,6 +30,7 @@ app.route('/search', searchRouter)
 app.route('/ai', aiRouter)
 app.route('/query', queryRouter)
 app.route('/datasets', commentsRouter)
+app.route('/discussions', discussionsRouter)
 
 app.onError(errorHandler)
 app.notFound(notFoundHandler)

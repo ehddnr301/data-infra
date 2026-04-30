@@ -2,6 +2,8 @@ import { HomePage } from '@/routes'
 import { RootErrorComponent, RootNotFoundComponent, RootRouteComponent } from '@/routes/__root'
 import { AboutPage } from '@/routes/about'
 import { AuthCallbackPage } from '@/routes/auth/callback'
+import { DiscussionsListPage } from '@/routes/discussions'
+import { DiscussionDetailPage } from '@/routes/discussions/$discussionId'
 import { DomainDetailPage } from '@/routes/domains/$domainKey'
 import { GlossaryListPage } from '@/routes/glossary'
 import { GlossaryDetailPage } from '@/routes/glossary/$termId'
@@ -90,6 +92,18 @@ const authCallbackRoute = createRoute({
   component: AuthCallbackPage,
 })
 
+const discussionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/discussions',
+  component: DiscussionsListPage,
+})
+
+const discussionDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/discussions/$discussionId',
+  component: DiscussionDetailPage,
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   aboutRoute,
@@ -103,6 +117,8 @@ const routeTree = rootRoute.addChildren([
   listingsRoute,
   listingDetailRoute,
   domainDetailRoute,
+  discussionsRoute,
+  discussionDetailRoute,
 ])
 
 export const router = createRouter({

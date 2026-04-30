@@ -409,3 +409,87 @@ export type DatasetComment = {
   created_at: string
   updated_at: string | null
 }
+
+// --- Discussions ---
+
+export type DiscussionSource = 'human' | 'ai-auto' | 'ai-assisted'
+
+export type DiscussionLinkedDataset = {
+  id: string
+  name: string
+}
+
+export type DiscussionLinkedListing = {
+  id: string
+  domain: DomainName
+  slug: string
+  title: string
+}
+
+export type DiscussionLinkedQuery = {
+  id: string
+  status: 'success' | 'error'
+}
+
+export type DiscussionLinkedRefs = {
+  dataset: DiscussionLinkedDataset | null
+  listing: DiscussionLinkedListing | null
+  query_history: DiscussionLinkedQuery | null
+}
+
+export type DiscussionPostBase = {
+  id: string
+  title: string
+  user_email: string
+  user_name: string | null
+  source: DiscussionSource
+  dataset_id: string | null
+  listing_id: string | null
+  query_history_id: string | null
+  upvote_count: number
+  comment_count: number
+  created_at: string
+  linked: DiscussionLinkedRefs
+}
+
+export type DiscussionPostSummary = DiscussionPostBase & {
+  excerpt: string
+}
+
+export type DiscussionPost = DiscussionPostBase & {
+  content: string
+}
+
+export type DiscussionComment = {
+  id: string
+  post_id: string
+  parent_comment_id: string | null
+  user_email: string
+  user_name: string | null
+  source: DiscussionSource
+  content: string
+  upvote_count: number
+  created_at: string
+}
+
+export type DiscussionUpvoteResponse = {
+  target_type: 'post' | 'comment'
+  target_id: string
+  upvote_count: number
+  created: boolean
+}
+
+export type CreateDiscussionInput = {
+  title: string
+  content: string
+  source?: DiscussionSource
+  dataset_id?: string | null
+  listing_id?: string | null
+  query_history_id?: string | null
+}
+
+export type CreateDiscussionCommentInput = {
+  content: string
+  source?: DiscussionSource
+  parent_comment_id?: string | null
+}
